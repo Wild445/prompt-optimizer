@@ -1,0 +1,13 @@
+# Secrets: .env holds the Azure key. .env.example is the committed template.
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local state: SQLite conversation store and generated prompts
+data/
+outputs/

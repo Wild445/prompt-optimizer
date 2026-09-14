@@ -1,0 +1,10 @@
+# Pipeline
+prompty>=2.0
+openai
+langchain-openai
+python-json-logger
+
+# Local chat UI (webapp/)
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.0
