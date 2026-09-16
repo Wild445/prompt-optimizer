@@ -1,7 +1,10 @@
-/* Local chat UI for the prompt-synthesis pipeline.
-   No build step and no dependencies - served straight from webapp/static. */
+/* The prompt-creation workspace: the six-stage synthesis chat.
+   Shared helpers live in common.js; the shell that switches between this
+   workspace and the optimizer lives in main.js. */
 
-   const state = {
+import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, renderMarkdown } from "./common.js";
+
+  const state = {
     conversations: [],
     currentId: null,
     conversation: null,
@@ -13,29 +16,14 @@
     expandedStages: new Set(),
     steps: [],
   };
-  
+
   /* Nodes owned by the in-flight run. They are appended straight to the transcript
      instead of going through renderConversation(), which would wipe them on every
      token; the closing `state` event re-renders everything from the server. */
   const live = { node: null, body: null, stage: null, text: "", thinking: null };
-  
-  const el = (id) => document.getElementById(id);
+
   const transcript = el("transcript");
-  
-  /* ------------------------------------------------------------------ api */
-  
-  async function api(path, options = {}) {
-    const response = await fetch(`/api${path}`, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(detail.detail || `Request failed (${response.status})`);
-    }
-    return response.json();
-  }
-  
+
   function applyState(payload) {
     state.conversation = payload.conversation;
     state.messages = payload.messages || [];
@@ -45,79 +33,8 @@
     renderConversation();
     loadConversations();
   }
-  
-  /* ------------------------------------------------------------------ markdown
-     LLM output is untrusted text: escape first, then apply a small subset of
-     markdown to the escaped string. Nothing here ever inserts raw model output. */
-  
-  function escapeHtml(text) {
-    return String(text)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-  
-  function renderMarkdown(source) {
-    const blocks = [];
-    // Pull fenced code out first so its contents are never treated as markdown.
-    let text = escapeHtml(source).replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-      blocks.push(`<pre><code data-lang="${lang}">${code.replace(/\n$/, "")}</code></pre>`);
-      return ` BLOCK${blocks.length - 1} `;
-    });
-  
-    const inline = (line) =>
-      line
-        .replace(/`([^`]+)`/g, "<code>$1</code>")
-        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-  
-    const html = [];
-    let list = null; // 'ul' | 'ol' | null
-  
-    const closeList = () => {
-      if (list) { html.push(`</${list}>`); list = null; }
-    };
-  
-    for (const rawLine of text.split("\n")) {
-      const line = rawLine.trimEnd();
-      const placeholder = line.match(/^ BLOCK(\d+) $/);
-      if (placeholder) { closeList(); html.push(blocks[Number(placeholder[1])]); continue; }
-      if (!line.trim()) { closeList(); continue; }
-  
-      const heading = line.match(/^(#{1,4})\s+(.*)$/);
-      if (heading) {
-        closeList();
-        const level = Math.min(heading[1].length + 1, 4);
-        html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-        continue;
-      }
-      const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
-      if (ordered) {
-        if (list !== "ol") { closeList(); html.push("<ol>"); list = "ol"; }
-        html.push(`<li>${inline(ordered[2])}</li>`);
-        continue;
-      }
-      const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
-      if (bullet) {
-        if (list !== "ul") { closeList(); html.push("<ul>"); list = "ul"; }
-        html.push(`<li>${inline(bullet[1])}</li>`);
-        continue;
-      }
-      closeList();
-      html.push(`<p>${inline(line)}</p>`);
-    }
-    closeList();
-    return html.join("");
-  }
-  
+
   /* ------------------------------------------------------------------ sidebar */
-  
-  function relativeTime(iso) {
-    const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-    if (seconds < 60) return "just now";
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
-  }
   
   async function loadConversations() {
     const { conversations } = await api("/conversations");
@@ -154,6 +71,8 @@
             <span>${relativeTime(conversation.updated_at)}</span>
             <span>|</span>
             <span>${conversation.stage === "complete" ? "done" : conversation.stage}</span>
+            <span>|</span>
+            <span>${formatCost(conversation.estimated_cost)}</span>
           </div>
         </div>
         <button type="button" class="conversation-delete" title="Delete chat" aria-label="Delete chat">&#10005;</button>`;
@@ -198,18 +117,6 @@
   }
   
   /* ------------------------------------------------------------------ transcript */
-  
-  function card({ label, body, className = "", open = false }) {
-    const node = document.createElement("div");
-    node.className = `card ${className}${open ? " open" : ""}`;
-    node.innerHTML = `
-      <div class="card-head"><span class="chev">&#9654;</span><span class="card-label"></span></div>
-      <div class="card-body md"></div>`;
-    node.querySelector(".card-label").textContent = label;
-    node.querySelector(".card-body").innerHTML = body;
-    node.querySelector(".card-head").onclick = () => node.classList.toggle("open");
-    return node;
-  }
   
   function renderQuestions(message) {
     const answered = message.kind === "questions_answered";
@@ -365,7 +272,7 @@
     el("conversation-id").textContent = conversation ? conversation.id : "";
     el("usage").textContent =
       state.usage && state.usage.calls
-        ? `${state.usage.calls} calls | ${state.usage.total_tokens.toLocaleString()} tokens | ${state.usage.latency_seconds.toFixed(1)}s`
+        ? `${state.usage.calls} calls | ${state.usage.total_tokens.toLocaleString()} tokens | ${state.usage.latency_seconds.toFixed(1)}s | ${formatCost(state.usage.estimated_cost)}`
         : "";
   
     if (conversation) {
@@ -668,36 +575,13 @@
     }
   }
   
-  /* Reads the NDJSON progress stream: one JSON event per line, rendered as it
-     lands so the user sees the pipeline working instead of a frozen page. */
   async function runStream(path, body, echo) {
     if (state.busy) return;
     setBusy(true);
     if (echo) appendUserBubble(echo);
     showThinking("Starting...");
     try {
-      const response = await fetch(`/api${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body || {}),
-      });
-      if (!response.ok || !response.body) {
-        const detail = await response.json().catch(() => ({ detail: response.statusText }));
-        throw new Error(detail.detail || `Request failed (${response.status})`);
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        // A chunk can split a line in half; the tail waits for the next read.
-        buffer = lines.pop();
-        for (const line of lines) if (line.trim()) handleEvent(JSON.parse(line));
-      }
-      if (buffer.trim()) handleEvent(JSON.parse(buffer));
+      await readNdjson(path, body, handleEvent);
     } catch (error) {
       clearLive();
       alert(error.message);
@@ -707,7 +591,7 @@
       setBusy(false);
     }
   }
-  
+
   async function selectConversation(conversationId) {
     state.currentId = conversationId;
     applyState(await api(`/conversations/${conversationId}`));
@@ -763,31 +647,42 @@
   }
   
   /* ------------------------------------------------------------------ wiring */
-  
-  el("new-chat").onclick = newConversation;
-  el("send").onclick = send;
-  el("toggle-settings").onclick = () => {
-    const panel = el("settings");
-    panel.hidden = !panel.hidden;
-  };
-  ["target-model", "audience", "model-notes", "humanize", "max-rounds"].forEach((id) => {
-    el(id).addEventListener("change", saveSettings);
-    el(id).addEventListener("input", saveSettings);
-  });
-  
-  const composer = el("composer-input");
-  composer.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      send();
-    }
-  });
-  composer.addEventListener("input", () => {
-    composer.style.height = "auto";
-    composer.style.height = `${Math.min(composer.scrollHeight, 200)}px`;
-  });
-  
-  (async function init() {
+
+  let attached = false;
+
+  function attach() {
+    if (attached) return;
+    attached = true;
+
+    el("new-chat").onclick = newConversation;
+    el("send").onclick = send;
+    el("toggle-settings").onclick = () => {
+      const panel = el("settings");
+      panel.hidden = !panel.hidden;
+    };
+    ["target-model", "audience", "model-notes", "humanize", "max-rounds"].forEach((id) => {
+      el(id).addEventListener("change", saveSettings);
+      el(id).addEventListener("input", saveSettings);
+    });
+
+    const composer = el("composer-input");
+    composer.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        send();
+      }
+    });
+    composer.addEventListener("input", () => {
+      composer.style.height = "auto";
+      composer.style.height = `${Math.min(composer.scrollHeight, 200)}px`;
+    });
+  }
+
+  /* Called by main.js the first time this workspace is shown. Loading is deferred
+     so opening the app straight into the optimizer costs nothing here. */
+  export async function init() {
+    attach();
+    if (state.currentId) return;
     await loadStages();
     await loadConversations();
     if (state.conversations.length) {
@@ -795,5 +690,5 @@
     } else {
       await newConversation();
     }
-    composer.focus();
-  })();
+    el("composer-input").focus();
+  }

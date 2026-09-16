@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from chat_common.services.llm_service import INPUT_COST_PER_1K, OUTPUT_COST_PER_1K
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "conversations.db"
 
 _SCHEMA = """
@@ -146,11 +148,22 @@ def list_conversations(limit: int = 200) -> list[dict[str, Any]]:
         # Lexicographic sort on the raw string, not datetime(): SQLite's datetime()
         # truncates to whole seconds, discarding the precision that breaks ties.
         # Safe because every timestamp is written as fixed-offset (+00:00) UTC.
-        "SELECT id, title, created_at, updated_at, stage, target_model FROM conversations"
-        " ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+        "SELECT c.id, c.title, c.created_at, c.updated_at, c.stage, c.target_model,"
+        " COALESCE(u.prompt_tokens, 0) AS prompt_tokens, COALESCE(u.completion_tokens, 0) AS completion_tokens"
+        " FROM conversations c"
+        " LEFT JOIN ("
+        "   SELECT conversation_id, SUM(prompt_tokens) AS prompt_tokens, SUM(completion_tokens) AS completion_tokens"
+        "   FROM stage_runs GROUP BY conversation_id"
+        " ) u ON u.conversation_id = c.id"
+        " ORDER BY c.updated_at DESC, c.created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    conversations = []
+    for row in rows:
+        conversation = dict(row)
+        conversation["estimated_cost"] = round(_estimate_cost(conversation.pop("prompt_tokens"), conversation.pop("completion_tokens")), 6)
+        conversations.append(conversation)
+    return conversations
 
 
 def update_conversation(conversation_id: str, **fields: Any) -> None:
@@ -290,10 +303,24 @@ def completed_stages(conversation_id: str) -> set[str]:
     return {row["stage"] for row in rows}
 
 
+def _estimate_cost(prompt_tokens: int, completion_tokens: int) -> float:
+    """Recurring per-token API cost, using the same rates the LLM service logs against."""
+    return (prompt_tokens / 1000) * INPUT_COST_PER_1K + (completion_tokens / 1000) * OUTPUT_COST_PER_1K
+
+
 def usage_summary(conversation_id: str) -> dict[str, Any]:
     row = connect().execute(
         "SELECT COUNT(*) AS calls, COALESCE(SUM(total_tokens), 0) AS total_tokens,"
+        " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
         " COALESCE(SUM(latency_seconds), 0) AS latency_seconds FROM stage_runs WHERE conversation_id = ?",
         (conversation_id,),
     ).fetchone()
-    return dict(row) if row else {"calls": 0, "total_tokens": 0, "latency_seconds": 0}
+    summary = dict(row) if row else {
+        "calls": 0,
+        "total_tokens": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "latency_seconds": 0,
+    }
+    summary["estimated_cost"] = round(_estimate_cost(summary["prompt_tokens"], summary["completion_tokens"]), 6)
+    return summary

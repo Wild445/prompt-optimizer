@@ -53,9 +53,37 @@ body {
 }
 
 .sidebar-head { padding: 16px; border-bottom: 1px solid var(--border); }
-.sidebar-head h1 { font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); margin: 0 0 12px; }
+.sidebar-head h1 { font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); margin: 0; }
 
-.conversation-list { flex: 1; overflow-y: auto; padding: 8px; }
+/* ---------------------------------------------------------------- workspace sections */
+
+/* An accordion, not independent disclosures: the open section *is* the workspace
+   on the right, so exactly one is open and collapsing it would leave the main
+   panel showing something the sidebar no longer points at. */
+.sections { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+
+.workspace-section { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); min-height: 0; }
+.workspace-section.expanded { flex: 1; }
+
+.section-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 12px 14px; background: transparent; border: 0; cursor: pointer;
+  font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--text-dim);
+  letter-spacing: 0.03em; text-align: left;
+}
+.section-head:hover { color: var(--text); background: var(--bg-input); }
+.workspace-section.expanded .section-head { color: var(--text); }
+.section-chev { font-size: 9px; transition: transform 0.15s; flex: 0 0 auto; }
+.workspace-section.expanded .section-chev { transform: rotate(90deg); }
+.section-title { flex: 1; min-width: 0; }
+.section-hint { font-size: 10px; font-weight: 400; color: var(--text-dim); }
+.workspace-section.expanded .section-head .section-hint { color: var(--accent); }
+
+.section-body { display: none; flex-direction: column; min-height: 0; padding: 0 12px 12px; }
+.workspace-section.expanded .section-body { display: flex; flex: 1; }
+.section-body > .btn-primary { margin-bottom: 10px; }
+
+.conversation-list { flex: 1; overflow-y: auto; padding: 4px 0; min-height: 60px; }
 
 .conversation {
   padding: 9px 10px;
@@ -97,7 +125,7 @@ body {
 
 /* ---------------------------------------------------------------- stage picker */
 
-.stage-picker { border-bottom: 1px solid var(--border); padding: 12px 12px 4px; }
+.stage-picker { border-bottom: 1px solid var(--border); padding: 0 0 8px; margin-bottom: 8px; }
 .stage-picker-head {
   display: flex; align-items: baseline; justify-content: space-between;
   font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; padding: 0 4px;
@@ -113,6 +141,8 @@ body {
 .stage-item-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; cursor: pointer; }
 .stage-item.locked .stage-item-row { cursor: default; }
 .stage-item-row input[type="radio"] { accent-color: var(--accent); margin: 0; flex: 0 0 auto; }
+/* The optimizer's step guide is read-only, so its descriptions sit flush left. */
+.stage-item-row:not(:has(input)) + .stage-item-desc { padding-left: 9px; }
 .stage-item-title { font-size: 12.5px; flex: 1; min-width: 0; }
 .stage-item-toggle { font-size: 10px; color: var(--text-dim); flex: 0 0 auto; transition: transform 0.15s; }
 .stage-item.expanded .stage-item-toggle { transform: rotate(90deg); }
@@ -332,3 +362,152 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .settings { grid-template-columns: 1fr; }
   .progress-panel { display: none; }
 }
+/* ---------------------------------------------------------------- workspace visibility
+   Last in the file on purpose: these override the `display` each panel type sets
+   for itself above, so only the workspace the sidebar has open is in the layout. */
+
+.main[data-workspace] { display: none; }
+.main[data-workspace].active { display: flex; }
+.progress-panel[data-workspace] { display: none; }
+.progress-panel[data-workspace].active { display: flex; }
+
+/* ---------------------------------------------------------------- optimizer forms */
+
+.form-card {
+  background: var(--bg-raised); border: 1px solid var(--accent); border-radius: var(--radius);
+  padding: 18px 20px; display: flex; flex-direction: column; gap: 10px;
+}
+.form-card.form-done { border-color: var(--border); opacity: 0.72; }
+.form-card h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.form-card h4 { margin: 14px 0 6px; font-size: 13px; }
+.form-hint { margin: 0; font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+.form-note { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+.form-warning { margin: 0; font-size: 12px; color: var(--danger); line-height: 1.5; }
+.form-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.form-submit { width: auto; align-self: flex-start; }
+
+.form-area, .form-select, .criterion-title, .criterion-desc, .row-reason {
+  background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 9px 11px; font-family: var(--font); font-size: 13px; resize: vertical;
+  width: 100%;
+}
+.form-area:focus, .form-select:focus, .criterion-title:focus, .criterion-desc:focus, .row-reason:focus {
+  outline: 2px solid var(--accent); outline-offset: -1px;
+}
+.form-area { line-height: 1.5; }
+.form-row { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
+.form-row small { font-size: 11px; }
+.form-select { width: auto; min-width: 240px; }
+.form-file { font-size: 12px; color: var(--text-dim); max-width: 100%; }
+
+.column-spec {
+  display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; align-items: baseline;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+  font-size: 12px; color: var(--text-dim);
+}
+.column-spec code { font-family: var(--mono); font-size: 12px; color: var(--text); }
+
+/* ---------------------------------------------------------------- criteria editor */
+
+.criteria-list { display: flex; flex-direction: column; gap: 8px; }
+.criterion { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg-input); }
+.criterion.removed { opacity: 0.4; }
+.criterion.removed .criterion-title, .criterion.removed .criterion-desc { text-decoration: line-through; }
+.criterion-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.criterion-id { font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex: 0 0 auto; min-width: 22px; }
+.criterion-title { flex: 1; min-width: 0; }
+.criterion-origin {
+  flex: 0 0 auto; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 2px 6px; border-radius: 4px; background: var(--border); color: var(--text-dim);
+}
+.criterion-origin.origin-user { background: var(--accent-soft); color: var(--accent); }
+.criterion-drop {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 1px solid var(--border);
+  border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 11px;
+}
+.criterion-drop:hover { color: var(--danger); border-color: var(--danger); }
+.added-criteria { margin: 0; padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--text-dim); }
+.added-criteria strong { color: var(--text); }
+.card-added { border-color: var(--ok); }
+.card-added .card-head { color: var(--ok); }
+
+/* ---------------------------------------------------------------- change list */
+
+.change-list { margin: 6px 0 0; padding-left: 20px; }
+.change-list li { margin-bottom: 10px; }
+.change-what { font-size: 13px; }
+.change-where { font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); margin-top: 3px; }
+.change-evidence { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+
+/* ---------------------------------------------------------------- results table */
+
+/* The table needs more room than a chat column, so its card opts out of the
+   820px reading width the transcript sets for everything else. */
+.wide-card { max-width: none; }
+.table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+/* min-width rather than a fluid table: squeezing seven columns into a narrow
+   pane makes every cell a one-word column. Past this width the wrapper scrolls. */
+.results-table { border-collapse: collapse; width: 100%; min-width: 980px; font-size: 12px; }
+.results-table th:nth-child(2), .results-table td:nth-child(2) { min-width: 150px; }
+.results-table th:nth-child(3), .results-table td:nth-child(3) { min-width: 210px; }
+.results-table th:nth-child(6), .results-table td:nth-child(6) { min-width: 190px; }
+.results-table th, .results-table td {
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top;
+}
+.results-table th {
+  position: sticky; top: 0; background: var(--bg-raised); font-weight: 600; color: var(--text-dim);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap;
+}
+.results-table tbody tr:last-child td { border-bottom: none; }
+.results-table tr.row-fail { background: rgba(255, 107, 107, 0.06); }
+.results-table tr.row-flagged { background: var(--accent-soft); }
+.cell-id { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.cell-criteria { font-family: var(--mono); font-size: 11.5px; color: var(--danger); }
+.cell-verdict, .cell-take { white-space: nowrap; }
+.cell-take { min-width: 190px; white-space: normal; }
+.cell-text { white-space: pre-wrap; line-height: 1.5; }
+.cell-text.clipped { cursor: pointer; }
+.cell-text.clipped:hover { color: var(--accent); }
+
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.pill-pass { background: rgba(78, 201, 160, 0.16); color: var(--ok); }
+.pill-fail { background: rgba(255, 107, 107, 0.16); color: var(--danger); }
+.pill-error { background: var(--border); color: var(--text-dim); }
+
+.btn-flag {
+  font-family: var(--font); font-size: 11.5px; padding: 5px 9px; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--text-dim); border: 1px solid var(--border);
+}
+.btn-flag:hover { border-color: var(--accent); color: var(--text); }
+.btn-flag.flagged { background: var(--accent); border-color: var(--accent); color: #fff; }
+.row-reason { margin-top: 6px; font-size: 12px; }
+.row-reason[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- live run */
+
+.run-live { border: 1px solid var(--accent); border-radius: var(--radius); background: var(--bg-raised); padding: 14px 16px; }
+.run-live-head { font-size: 12.5px; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+.run-live-rows { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+.run-live-row { display: flex; align-items: baseline; gap: 9px; font-size: 12px; padding: 3px 0; }
+.run-id { font-family: var(--mono); font-size: 11.5px; flex: 0 0 auto; min-width: 88px; }
+.run-mark { flex: 0 0 auto; font-weight: 700; }
+.run-pass .run-mark { color: var(--ok); }
+.run-fail .run-mark { color: var(--danger); }
+.run-error .run-mark { color: #e0a94b; }
+.run-detail { color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- scoreboard */
+
+.scoreboard { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 7px; }
+.score-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.score-label { min-width: 0; }
+.score-mark { font-weight: 700; font-size: 14px; flex: 0 0 auto; }
+.score-pass .score-mark { color: var(--ok); }
+.score-fail .score-mark { color: var(--danger); }
+.score-error .score-mark { color: #e0a94b; }
+.score-bar { display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: var(--bg-input); margin-top: 3px; }
+.score-bar span { display: block; transition: width 0.25s ease; }
+.bar-pass { background: var(--ok); }
+.bar-fail { background: var(--danger); }
+.bar-error { background: #e0a94b; }
+.score-note { margin: 0; font-size: 11px; color: var(--text-dim); font-family: var(--mono); }

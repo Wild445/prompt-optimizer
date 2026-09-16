@@ -8,3 +8,8 @@ python-json-logger
 fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.0
+# Multipart: the optimizer's test-case workbook is uploaded as a form file.
+python-multipart>=0.0.9
+
+# Prompt optimization (optimization/) - reads the uploaded .xlsx of test cases.
+openpyxl>=3.1

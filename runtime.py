@@ -353,3 +353,60 @@ async def stream_prompt(
         client or get_openai_client(),
         _completion_kwargs(prepared.parameters, extra_create_kwargs),
     )
+
+async def complete_messages(
+    messages: list[dict[str, Any]],
+    *,
+    model: Optional[str] = None,
+    client: Any = None,
+    label: str = "ad-hoc",
+    **create_kwargs: Any,
+) -> PromptCompletion:
+    """Complete a message list that was built at run time, not loaded from a Prompty file.
+
+    The optimization loop runs two prompts that only exist in the database: the
+    prompt under test (a user-supplied template rendered per test case) and the
+    generated LLM-as-a-judge prompt. Neither can be a ``.prompty`` file, but both
+    still need the NIQ CIS client and the same token/latency record every other
+    call produces — hence this sibling of :func:`complete_prompt`.
+    """
+    llm_client = client or get_openai_client()
+    deployment = model or os.getenv("CIS_LLM_4_DOT_1_DEPLOYMENT") or ""
+
+    started = time.perf_counter()
+    response = await asyncio.to_thread(
+        llm_client.chat.completions.create,
+        model=deployment,
+        messages=messages,
+        **create_kwargs,
+    )
+    latency_seconds = time.perf_counter() - started
+
+    content = ""
+    if response.choices and response.choices[0].message:
+        content = (response.choices[0].message.content or "").strip()
+
+    usage = getattr(response, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens))
+
+    logger.info(
+        "Ad-hoc completion finished",
+        extra={
+            "prompty_name": label,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "latency_seconds": round(latency_seconds, 4),
+        },
+    )
+    return PromptCompletion(
+        content=content,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        latency_seconds=latency_seconds,
+        messages=messages,
+        model=deployment,
+    )

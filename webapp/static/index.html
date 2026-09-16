@@ -5,29 +5,64 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NIQ Prompt Creator</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
-<body>
+<body data-workspace="creator">
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-head">
         <h1>Prompt Creator</h1>
-        <button id="new-chat" class="btn-primary">+ New chat</button>
       </div>
-      <div class="stage-picker">
-        <div class="stage-picker-head">
-          <span>Pipeline steps</span>
-          <span class="stage-picker-hint">Pick where to start</span>
-        </div>
-        <div id="stage-list" class="stage-list"></div>
+
+      <div class="sections">
+        <!-- Accordion: the open section is the workspace shown on the right. -->
+        <section class="workspace-section expanded" data-section="creator">
+          <button type="button" class="section-head" aria-expanded="true">
+            <span class="section-chev">&#9654;</span>
+            <span class="section-title">Prompt Creation</span>
+            <span class="section-hint">build &amp; refine</span>
+          </button>
+          <div class="section-body">
+            <button id="new-chat" class="btn-primary">+ New chat</button>
+            <div class="stage-picker">
+              <div class="stage-picker-head">
+                <span>Pipeline steps</span>
+                <span class="stage-picker-hint">Pick where to start</span>
+              </div>
+              <div id="stage-list" class="stage-list"></div>
+            </div>
+            <nav id="conversation-list" class="conversation-list" aria-label="Conversations"></nav>
+          </div>
+        </section>
+
+        <section class="workspace-section" data-section="optimizer">
+          <button type="button" class="section-head" aria-expanded="false">
+            <span class="section-chev">&#9654;</span>
+            <span class="section-title">Prompt Optimization</span>
+            <span class="section-hint">judge &amp; iterate</span>
+          </button>
+          <div class="section-body">
+            <button id="new-optimization" class="btn-primary">+ New optimization</button>
+            <div class="stage-picker">
+              <div class="stage-picker-head">
+                <span>Loop steps</span>
+                <span class="stage-picker-hint">Runs in order</span>
+              </div>
+              <div id="optimizer-step-list" class="stage-list"></div>
+            </div>
+            <nav id="optimization-list" class="conversation-list" aria-label="Optimizations"></nav>
+          </div>
+        </section>
       </div>
-      <nav id="conversation-list" class="conversation-list" aria-label="Conversations"></nav>
+
       <div class="sidebar-foot">
-        <span id="db-hint">Conversations are stored locally</span>
+        <span id="db-hint">Everything is stored locally</span>
       </div>
     </aside>
 
-    <main class="main">
+    <!-- ------------------------------------------------ prompt creation -->
+
+    <main class="main active" data-workspace="creator">
       <header class="topbar">
         <div class="topbar-title">
           <span id="conversation-title">New chat</span>
@@ -71,7 +106,7 @@
       </footer>
     </main>
 
-    <aside class="progress-panel" aria-label="Pipeline progress">
+    <aside class="progress-panel active" data-workspace="creator" aria-label="Pipeline progress">
       <div class="progress-head">
         <span>Progress</span>
         <span id="progress-status" class="progress-status">Idle</span>
@@ -81,8 +116,36 @@
         <span id="progress-hint">Steps tick off as each one finishes.</span>
       </div>
     </aside>
+
+    <!-- ------------------------------------------------ prompt optimization -->
+
+    <main class="main" data-workspace="optimizer">
+      <header class="topbar">
+        <div class="topbar-title">
+          <span id="optimization-title">New optimization</span>
+          <span id="optimization-id" class="conversation-id"></span>
+        </div>
+        <div class="topbar-actions">
+          <span id="optimization-usage" class="usage"></span>
+        </div>
+      </header>
+
+      <section id="opt-transcript" class="transcript" aria-live="polite"></section>
+    </main>
+
+    <aside class="progress-panel" data-workspace="optimizer" aria-label="Optimization progress">
+      <div class="progress-head">
+        <span>Test cases</span>
+        <span id="optimizer-progress-status" class="progress-status">Idle</span>
+      </div>
+      <div id="scoreboard" class="scoreboard" aria-live="polite"></div>
+      <ol id="optimizer-progress-list" class="progress-list" aria-live="polite"></ol>
+      <div class="progress-foot">
+        <span>Results are written to <code>outputs/optimizations/</code>.</span>
+      </div>
+    </aside>
   </div>
 
-  <script src="app.js?v=4"></script>
+  <script type="module" src="main.js?v=5"></script>
 </body>
 </html>

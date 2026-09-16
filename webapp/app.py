@@ -13,14 +13,15 @@ import traceback
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from chat_common.common.logging import logger
 from config import ENV_PATH, missing_env_vars
-from webapp import db, runner
+from optimization import dataset
+from webapp import db, opt_db, optimizer, runner
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -30,7 +31,9 @@ app = FastAPI(title="NIQ Prompt Creator", docs_url="/api/docs")
 @app.on_event("startup")
 def _startup() -> None:
     db.connect()
+    opt_db.ensure_schema()
     runner.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    optimizer.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     if os.getenv("PROMPT_CREATOR_FAKE_LLM") == "1":
         # Lets the real chat UI be driven end to end with no LLM calls, for
         # manual walkthroughs of the pipeline. See fake_llm.py.
@@ -297,6 +300,287 @@ def get_output(conversation_id: str):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="No output saved for this conversation yet")
     return FileResponse(path, media_type="text/markdown", filename=path.name)
+
+
+# --------------------------------------------------------------------------- optimization API
+# The second workspace: build an LLM-as-a-judge from the user's own failure
+# observations, grade a fixed test set with it, and loop the prompt until it
+# passes. Mirrors the conversation API above — same NDJSON streaming, same
+# "return the whole state" contract — against webapp/optimizer.py.
+
+
+class NewOptimization(BaseModel):
+    title: str = "New optimization"
+    template_kind: str = "jinja2"
+
+
+class OptimizationSettings(BaseModel):
+    title: Optional[str] = None
+    template_kind: Optional[str] = None
+
+
+class PromptSubmission(BaseModel):
+    prompt: str
+    template_kind: str = "jinja2"
+
+
+class ObservationSubmission(BaseModel):
+    observations: str
+
+
+class CriterionInput(BaseModel):
+    id: str = ""
+    title: str = ""
+    description: str = ""
+    origin: str = "agent"
+
+
+class CriteriaSubmission(BaseModel):
+    criteria: list[CriterionInput] = []
+    additions: str = ""
+
+
+class CaseFeedback(BaseModel):
+    message_id: str
+    agrees: bool = True
+    reason: str = ""
+
+
+class ReviewSubmission(BaseModel):
+    feedback: list[CaseFeedback] = []
+
+
+def _require_optimization(optimization_id: str) -> dict[str, Any]:
+    optimization = opt_db.get_optimization(optimization_id)
+    if optimization is None:
+        raise HTTPException(status_code=404, detail=f"No optimization {optimization_id}")
+    return optimization
+
+
+def _record_optimizer_failure(optimization_id: str, error: Exception) -> None:
+    """Turn a failed step into a card in the session, the way _record_failure does for chat.
+
+    The resume stage is read back from the transcript rather than guessed: each
+    interactive card is superseded only once its step succeeds, so the newest
+    open form is exactly where the user should land.
+    """
+    logger.error(
+        "Optimization step failed",
+        extra={"optimization_id": optimization_id, "error": str(error)},
+    )
+    if not isinstance(error, optimizer.OptimizerError):
+        traceback.print_exc()
+    opt_db.add_message(
+        optimization_id,
+        role="assistant",
+        kind="error",
+        content=f"{type(error).__name__}: {error}" if not isinstance(error, optimizer.OptimizerError) else str(error),
+    )
+    open_forms = {
+        "observations_form": "awaiting_observations",
+        "criteria_form": "reviewing_criteria",
+        "dataset_form": "awaiting_dataset",
+        "run_form": "ready_to_run",
+        "results_form": "reviewing_results",
+        "iteration_form": "awaiting_iteration",
+    }
+    resume = "awaiting_prompt"
+    for message in opt_db.list_messages(optimization_id):
+        if message["kind"] in open_forms:
+            resume = open_forms[message["kind"]]
+    opt_db.update_optimization(optimization_id, stage=resume)
+
+
+def _optimizer_stream(optimization_id: str, events: AsyncIterator[dict[str, Any]]) -> StreamingResponse:
+    """Relay optimizer events as NDJSON, closing with an authoritative state snapshot."""
+
+    async def body() -> AsyncIterator[bytes]:
+        try:
+            async for event in events:
+                yield (json.dumps(event) + "\n").encode("utf-8")
+        except Exception as error:  # noqa: BLE001 - surfaced to the user, logged in full
+            _record_optimizer_failure(optimization_id, error)
+            detail = str(error) if isinstance(error, optimizer.OptimizerError) else f"{type(error).__name__}: {error}"
+            yield (json.dumps({"type": "error", "detail": detail}) + "\n").encode("utf-8")
+        yield (json.dumps({"type": "state", **optimizer._state(optimization_id)}) + "\n").encode("utf-8")
+
+    return StreamingResponse(
+        body(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/optimizer/steps")
+def get_optimizer_steps() -> dict[str, Any]:
+    """Describe every step of the optimization loop, in order, for the sidebar."""
+    return {
+        "steps": [{"key": key, **optimizer.STEP_INFO[key]} for key in optimizer.STEP_ORDER],
+        "template_kinds": list(dataset.TEMPLATE_KINDS),
+        "column_help": dataset.COLUMN_HELP,
+    }
+
+
+@app.get("/api/optimizations")
+def get_optimizations() -> dict[str, Any]:
+    return {"optimizations": opt_db.list_optimizations()}
+
+
+@app.post("/api/optimizations")
+def post_optimization(body: NewOptimization) -> dict[str, Any]:
+    if body.template_kind not in dataset.TEMPLATE_KINDS:
+        raise HTTPException(status_code=400, detail=f"Unknown template type: {body.template_kind}")
+    optimization_id = opt_db.create_optimization(title=body.title, template_kind=body.template_kind)
+    return optimizer._state(optimization_id)
+
+
+@app.get("/api/optimizations/{optimization_id}")
+def get_optimization(optimization_id: str) -> dict[str, Any]:
+    _require_optimization(optimization_id)
+    return optimizer._state(optimization_id)
+
+
+@app.patch("/api/optimizations/{optimization_id}")
+def patch_optimization(optimization_id: str, body: OptimizationSettings) -> dict[str, Any]:
+    _require_optimization(optimization_id)
+    fields = body.model_dump(exclude_none=True)
+    if "template_kind" in fields and fields["template_kind"] not in dataset.TEMPLATE_KINDS:
+        raise HTTPException(status_code=400, detail=f"Unknown template type: {fields['template_kind']}")
+    opt_db.update_optimization(optimization_id, **fields)
+    return optimizer._state(optimization_id)
+
+
+@app.delete("/api/optimizations/{optimization_id}")
+def remove_optimization(optimization_id: str) -> dict[str, Any]:
+    _require_optimization(optimization_id)
+    opt_db.delete_optimization(optimization_id)
+    return {"deleted": optimization_id}
+
+
+@app.post("/api/optimizations/{optimization_id}/prompt/stream")
+def post_optimizer_prompt(optimization_id: str, body: PromptSubmission) -> StreamingResponse:
+    _require_optimization(optimization_id)
+    return _optimizer_stream(
+        optimization_id, optimizer.submit_prompt_stream(optimization_id, body.prompt, body.template_kind)
+    )
+
+
+@app.post("/api/optimizations/{optimization_id}/observations/stream")
+def post_optimizer_observations(optimization_id: str, body: ObservationSubmission) -> StreamingResponse:
+    _require_optimization(optimization_id)
+    return _optimizer_stream(
+        optimization_id, optimizer.submit_observations_stream(optimization_id, body.observations)
+    )
+
+
+@app.post("/api/optimizations/{optimization_id}/criteria/stream")
+def post_optimizer_criteria(optimization_id: str, body: CriteriaSubmission) -> StreamingResponse:
+    _require_optimization(optimization_id)
+    criteria = [criterion.model_dump() for criterion in body.criteria]
+    return _optimizer_stream(
+        optimization_id, optimizer.submit_criteria_stream(optimization_id, criteria, body.additions)
+    )
+
+
+@app.get("/api/optimizer/dataset-template")
+def get_dataset_template() -> Response:
+    """The starter workbook, so nobody has to guess the column names."""
+    filename = dataset.sample_filename()
+    media_type = (
+        "text/csv"
+        if filename.endswith(".csv")
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    return Response(
+        content=dataset.sample_workbook(),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/optimizations/{optimization_id}/dataset")
+async def post_optimizer_dataset(optimization_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    """Parse and store the uploaded test cases.
+
+    A :class:`dataset.DatasetError` is a spreadsheet the user needs to fix, so it
+    comes back as a 400 with the sentence to fix it — not as a card in the
+    transcript, because nothing has happened to the session yet.
+    """
+    _require_optimization(optimization_id)
+    raw = await file.read()
+    try:
+        cases = dataset.parse_dataset(raw, file.filename or "")
+    except dataset.DatasetError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    rows = [
+        {
+            "message_id": case.message_id,
+            "input_payload": case.input_payload,
+            "other_input_params": case.other_input_params,
+        }
+        for case in cases
+    ]
+    return optimizer.store_dataset(optimization_id, rows, file.filename or "uploaded file")
+
+
+@app.post("/api/optimizations/{optimization_id}/run/stream")
+def post_optimizer_run(optimization_id: str) -> StreamingResponse:
+    _require_optimization(optimization_id)
+    return _optimizer_stream(optimization_id, optimizer.run_iteration_stream(optimization_id))
+
+
+@app.post("/api/optimizations/{optimization_id}/review/stream")
+def post_optimizer_review(optimization_id: str, body: ReviewSubmission) -> StreamingResponse:
+    _require_optimization(optimization_id)
+    feedback = [item.model_dump() for item in body.feedback]
+    return _optimizer_stream(optimization_id, optimizer.submit_review_stream(optimization_id, feedback))
+
+
+@app.post("/api/optimizations/{optimization_id}/stop")
+def post_optimizer_stop(optimization_id: str) -> dict[str, Any]:
+    """Close a session off after an iteration instead of running another one.
+
+    Only meaningful while a "run it again?" card is open, so it retires that card
+    rather than touching anything the loop produced — the prompt, the criteria,
+    and every graded run stay exactly as they are.
+    """
+    _require_optimization(optimization_id)
+    opt_db.supersede_kind(optimization_id, "iteration_form", stopped=True)
+    opt_db.update_optimization(optimization_id, stage="complete")
+    opt_db.add_message(
+        optimization_id,
+        role="user",
+        kind="text",
+        content="Stopping here — keeping the current prompt version.",
+    )
+    return optimizer._state(optimization_id)
+
+
+@app.get("/api/optimizations/{optimization_id}/results.csv")
+def get_optimizer_results(optimization_id: str):
+    """Download the graded table for the latest iteration."""
+    optimization = _require_optimization(optimization_id)
+    path = Path(optimization["output_path"] or "")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No iteration has been run for this optimization yet")
+    return FileResponse(path, media_type="text/csv", filename=path.name)
+
+
+@app.get("/api/optimizations/{optimization_id}/prompt")
+def get_optimizer_prompt(optimization_id: str) -> Response:
+    """Download the latest prompt version as markdown."""
+    optimization = _require_optimization(optimization_id)
+    prompt = optimization["current_prompt"]
+    if not prompt.strip():
+        raise HTTPException(status_code=404, detail="This optimization has no prompt yet")
+    return Response(
+        content=prompt,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="prompt_v{optimization["prompt_version"]}_{optimization_id}.md"'
+        },
+    )
 
 
 @app.exception_handler(KeyError)

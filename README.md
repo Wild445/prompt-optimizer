@@ -1,33 +1,57 @@
-# NIQ Prompt Creator — Prompt Synthesis Pipeline
+# NIQ Prompt Creator — Prompt Synthesis & Optimization
 
-Six prompt-synthesis capabilities built on Azure OpenAI, using `runtime.py`'s
-`.prompty` + `complete_prompt()` pattern so LLM calling (auth headers, model
-resolution, logging, token/latency capture) stays centralized in one place.
+Two workspaces over Azure OpenAI, both using `runtime.py`'s `.prompty` +
+`complete_prompt()` pattern so LLM calling (auth headers, model resolution,
+logging, token/latency capture) stays centralized in one place:
+
+- **Prompt Creation** — six synthesis stages that turn a rough idea into a
+  finished prompt.
+- **Prompt Optimization** — build an LLM-as-a-judge from your own observations
+  about how a prompt fails, grade a fixed set of test cases with it, and loop
+  the prompt until they pass.
+
+The UI's left sidebar holds one foldable section per workspace; opening a section
+switches the panels on the right to that workflow.
 
 ## Layout
 
 ```
 prompts/                         # versioned .prompty files — edit these, not Python, to change behavior
-  01_prompt_builder.prompty
+  01_prompt_builder.prompty      # 01-06: the synthesis pipeline
   02_clarify.prompty
   03_workflow_planner.prompty
   04_prompt_optimizer.prompty
   05_model_specific_prompting.prompty
   06_ai_humanizer.prompty
+  10_judge_scaffold.prompty      # 10-15: the optimization loop
+  11_criteria_drafter.prompty
+  12_criteria_consolidator.prompty
+  13_judge_builder.prompty
+  14_failure_analyst.prompty
+  15_prompt_revisor.prompty
 synthesis/
   service.py                     # one function per stage — call independently
   orchestrator.py                # run_pipeline() — chains all stages (batch/CLI)
+optimization/
+  service.py                     # one function per optimization step, plus the two ad-hoc calls
+  dataset.py                     # .xlsx/.csv test cases + Jinja/LangChain template rendering
 webapp/
-  app.py                         # FastAPI: conversation API + serves the UI
-  runner.py                      # the same stages as a resumable state machine (chat)
+  app.py                         # FastAPI: both APIs + serves the UI
+  runner.py                      # the synthesis stages as a resumable state machine (chat)
+  optimizer.py                   # the optimization loop as a resumable state machine
   db.py                          # SQLite: conversations, messages, per-stage telemetry
-  static/                        # dependency-free frontend (no build step)
+  opt_db.py                      # SQLite: optimizations, criteria, test cases, graded results
+  static/                        # dependency-free ES modules (no build step)
+    common.js                    #   helpers shared by both workspaces
+    creator.js / optimizer.js    #   one module per workspace
+    main.js                      #   the shell that switches between them
 chat_common/                     # your provided llm_service.py / logging.py, packaged to match runtime.py's imports
-runtime.py                       # unchanged — the calling layer
-run_ui.py                        # `python run_ui.py` — starts the local chat UI
+runtime.py                       # the calling layer (complete_prompt / stream_prompt / complete_messages)
+run_ui.py                        # `python run_ui.py` — starts the local UI
 
 data/conversations.db            # created on first run (gitignored)
 outputs/<conversation_id>/       # saved prompts per conversation (gitignored)
+outputs/optimizations/<id>/      # prompt versions, judge, criteria, graded runs (gitignored)
 ```
 
 ## Environment variables (from `chat_common/services/llm_service.py`)
@@ -81,6 +105,76 @@ Needs Python 3.10+ (`chat_common/common/logging.py` uses `str | None` at runtime
 `GET/POST /api/conversations`, `GET/PATCH/DELETE /api/conversations/{id}`,
 `POST /api/conversations/{id}/messages`, `/answers`, `/skip`, and
 `GET /api/conversations/{id}/output`. Interactive docs at `/api/docs`.
+
+## Usage — prompt optimization
+
+Open **Prompt Optimization** in the sidebar. The loop, in order:
+
+1. **Paste the prompt** you want to optimize and pick its template dialect
+   (Jinja2 `{{ var }}` or LangChain `{var}`). An agent drafts the skeleton of an
+   LLM-as-a-judge around it.
+2. **Say how it fails**, one problem per line. Another agent turns those
+   observations into success criteria a judge can score `true`/`false`.
+3. **Review the criteria** — edit, delete, or add your own. A consolidator merges
+   both lists, stamps them `C1..Cn`, and a builder folds them into the judge
+   prompt.
+4. **Upload the test cases** as `.xlsx` or `.csv` (there is a *Download the
+   template* button):
+
+   | Column | Contents |
+   |---|---|
+   | `message_id` | a stable id per test case — keep it the same across iterations so runs can be compared |
+   | `input_payload` | the input the prompt is run against |
+   | `other_input_params` | the template variables, as a JSON object or `key=value` lines. Blank if the prompt has none. |
+
+   Keeping the input fixed is the point: the only thing that changes between
+   iterations is the prompt.
+5. **Run.** Every case is rendered, answered by the current prompt, and scored by
+   the judge. The right-hand panel counts up live — `Success (X/N)` with a green
+   tick, `Failed (Y/N)` with a red cross.
+6. **Review the table** in the UI. Each row shows the input, the response, the
+   verdict, which criteria failed, why, and which part of the prompt the judge
+   blames. Every row counts as agreed by default; press **Flag as wrong** only on
+   the verdicts you disagree with. A flagged row opens a reason box and
+   **Continue** stays disabled until every flagged row has one — so a
+   disagreement can never be recorded without the reason that makes it useful.
+7. **Analyze and revise.** An analyst reads the run plus your remarks into a list
+   of changes, each tied to the criteria it fixes and the part of the prompt
+   responsible. A remark no criterion covers becomes a *new* success criterion,
+   added to the judge before the next run. A revisor applies the changes and
+   produces the next prompt version.
+8. **Run again** against the same test cases, or stop.
+
+Everything lands in `outputs/optimizations/<id>/`:
+
+| File | Contents |
+|---|---|
+| `prompt_v<n>.md` | every version of the prompt under test |
+| `judge_scaffold.md` / `judge_prompt.md` | the judge skeleton and the finished judge |
+| `criteria.json` | the active success criteria, with their ids |
+| `iteration_<n>_results.csv` | message_id, input, params, response, verdict, failed criteria, reason, and your agreement |
+| `session.json` | the whole session, including every iteration |
+
+Test cases run `PROMPT_OPTIMIZER_CONCURRENCY` at a time (default 4). A case that
+throws is recorded with `status=error` and counted separately rather than
+abandoning the run.
+
+### API
+
+`GET/POST /api/optimizations`, `GET/PATCH/DELETE /api/optimizations/{id}`,
+`POST /api/optimizations/{id}/prompt|observations|criteria|run|review` (each
+`/stream`), `POST /api/optimizations/{id}/dataset` (multipart),
+`POST /api/optimizations/{id}/stop`, `GET /api/optimizations/{id}/results.csv`
+and `/prompt`, plus `GET /api/optimizer/steps` and
+`/api/optimizer/dataset-template`.
+
+### Trying it without an API key
+
+```bash
+PROMPT_CREATOR_FAKE_LLM=1 python run_ui.py     # both workspaces, canned responses
+python scripts/test_optimizer_offline.py       # the whole loop, headless
+python scripts/test_pipeline_offline.py        # the six synthesis stages, headless
+```
 
 ## Usage — independent steps (menu-style)
 
