@@ -18,19 +18,18 @@ model:
     # verbosity: low
 inputs:
   target_model:
-    type: string
+    kind: string
     description: The model family/deployment the prompt will actually run against (e.g. "Azure OpenAI GPT-5.4", "Claude Opus 5", "GPT-4.1").
+    example: "Azure OpenAI GPT-5.4"
   model_notes:
-    type: string
+    kind: string
     description: >
       Authoritative, caller-supplied facts about the target model — supported
       parameters, output conventions, known quirks, context limits. Pass the
       target model's own prompting guide here. Leave empty only when no such
       notes exist; this stage will then stay conservative instead of guessing.
     default: ""
-sample:
-  target_model: "Azure OpenAI GPT-5.4"
-  model_notes: ""
+    example: ""
 ---
 system:
 You are the Model-Specific Prompting stage of a prompt-synthesis pipeline. The

@@ -61,11 +61,10 @@ model:
     # verbosity: low
 inputs:
   max_questions:
-    type: int
+    kind: integer
     description: Upper bound on how many clarifying questions to ask in one turn.
     default: 4
-sample:
-  max_questions: 4
+    example: 4
 ---
 system:
 You are the Clarify stage of a prompt-synthesis pipeline. Your only job is to

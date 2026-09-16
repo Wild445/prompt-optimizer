@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     humanize           INTEGER NOT NULL DEFAULT 0,
     clarify_rounds     INTEGER NOT NULL DEFAULT 0,
     max_clarify_rounds INTEGER NOT NULL DEFAULT 3,
-    output_path        TEXT    NOT NULL DEFAULT ''
+    output_path        TEXT    NOT NULL DEFAULT '',
+    start_stage        TEXT    NOT NULL DEFAULT 'build_prompt'
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -92,8 +93,20 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
             _CONN.execute("PRAGMA foreign_keys = ON")
             _CONN.execute("PRAGMA journal_mode = WAL")
             _CONN.executescript(_SCHEMA)
+            _migrate(_CONN)
             _CONN.commit()
         return _CONN
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database file already exists.
+
+    ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so new
+    columns need an explicit, idempotent ``ALTER TABLE`` here.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+    if "start_stage" not in existing:
+        conn.execute("ALTER TABLE conversations ADD COLUMN start_stage TEXT NOT NULL DEFAULT 'build_prompt'")
 
 
 def close() -> None:
@@ -154,11 +167,20 @@ def update_conversation(conversation_id: str, **fields: Any) -> None:
         conn.commit()
 
 
-def delete_conversation(conversation_id: str) -> None:
+def delete_conversation(conversation_id: str) -> bool:
+    """Remove a conversation and everything hanging off it. Returns False if it was already gone.
+
+    Children are deleted explicitly rather than relying on ``ON DELETE CASCADE``:
+    the cascade only fires while ``PRAGMA foreign_keys`` is on, and a database
+    file opened by anything else would silently leave orphaned rows behind.
+    """
     with _LOCK:
         conn = connect()
-        conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+        conn.execute("DELETE FROM stage_runs WHERE conversation_id = ?", (conversation_id,))
+        cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
         conn.commit()
+        return cursor.rowcount > 0
 
 
 # --------------------------------------------------------------------------- messages
@@ -254,6 +276,18 @@ def record_stage_run(conversation_id: str, stage: str, completion: Any) -> None:
             ),
         )
         conn.commit()
+
+
+def completed_stages(conversation_id: str) -> set[str]:
+    """Stages that have produced at least one LLM call for this conversation.
+
+    Derived from ``stage_runs`` rather than tracked separately, so the progress
+    panel stays correct across reloads and conversation switches.
+    """
+    rows = connect().execute(
+        "SELECT DISTINCT stage FROM stage_runs WHERE conversation_id = ?", (conversation_id,)
+    ).fetchall()
+    return {row["stage"] for row in rows}
 
 
 def usage_summary(conversation_id: str) -> dict[str, Any]:

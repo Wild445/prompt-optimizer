@@ -1,18 +1,30 @@
-"""Thin async wrappers around Prompty 2.x load/prepare plus the NIQ LLM client."""
+"""Thin async wrappers around Prompty 2.x load/prepare plus the NIQ LLM client.
+
+Two call styles are offered: ``complete_prompt`` blocks until the whole
+completion is back, and ``stream_prompt`` hands out text deltas as they arrive
+so a UI can render mid-generation. Both end up with the same
+``PromptCompletion`` record, so telemetry is identical either way.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Iterator, Optional
 
 import prompty
+from openai import BadRequestError
 
 from chat_common.common.logging import logger
 from chat_common.services.llm_service import get_openai_client
+from config import load_env
+
+# Prompty resolves ${env:...} frontmatter during load, so .env must land first.
+load_env()
 
 _PROMPT_CACHE: dict[str, Any] = {}
 
@@ -207,4 +219,137 @@ async def complete_prompt(
         latency_seconds=latency_seconds,
         messages=prepared.messages,
         model=prepared.model,
+    )
+
+
+class PromptStream:
+    """Async iterator over the text deltas of one streamed Prompty completion.
+
+    ``get_openai_client()`` returns the *sync* Azure SDK client, so iterating its
+    stream would block the event loop and stall every other request. A worker
+    thread drains the SDK iterator into an ``asyncio.Queue`` instead, and this
+    object replays it as an async iterator.
+
+    Iterate it to completion, then read :attr:`completion` for the assembled text
+    and its telemetry::
+
+        stream = await stream_prompt(path)
+        async for delta in stream:
+            ...
+        record(stream.completion)
+    """
+
+    def __init__(self, prepared: PreparedPrompt, client: Any, create_kwargs: dict[str, Any]) -> None:
+        self._prepared = prepared
+        self._client = client
+        self._create_kwargs = create_kwargs
+        self._completion: Optional[PromptCompletion] = None
+
+    @property
+    def prepared(self) -> PreparedPrompt:
+        """The rendered prompt this stream was opened for."""
+        return self._prepared
+
+    @property
+    def completion(self) -> PromptCompletion:
+        """The finished completion. Only valid once the stream is exhausted."""
+        if self._completion is None:
+            raise RuntimeError("PromptStream must be fully iterated before reading `completion`")
+        return self._completion
+
+    def _open(self) -> Iterator[Any]:
+        """Start the SDK stream, asking for usage totals when the API allows it."""
+        base = {
+            "model": self._prepared.model,
+            "messages": self._prepared.messages,
+            "stream": True,
+            **self._create_kwargs,
+        }
+        try:
+            return self._client.chat.completions.create(**base, stream_options={"include_usage": True})
+        except BadRequestError:
+            # Older API versions reject stream_options; give up the token counts
+            # rather than the stream itself.
+            logger.warning(
+                "stream_options unsupported; streaming without usage totals",
+                extra={"prompty_name": self._prepared.name},
+            )
+            return self._client.chat.completions.create(**base)
+
+    async def __aiter__(self) -> AsyncIterator[str]:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        done = object()
+
+        def pump() -> None:
+            """Drain the blocking SDK iterator onto the loop's queue."""
+            try:
+                for chunk in self._open():
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except BaseException as error:  # noqa: BLE001 - re-raised on the consumer side
+                loop.call_soon_threadsafe(queue.put_nowait, error)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, done)
+
+        chunks: list[str] = []
+        usage: Any = None
+        started = time.perf_counter()
+        threading.Thread(target=pump, name=f"prompty-stream-{self._prepared.name}", daemon=True).start()
+
+        while True:
+            item = await queue.get()
+            if item is done:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            usage = getattr(item, "usage", None) or usage
+            for choice in getattr(item, "choices", None) or []:
+                text = getattr(getattr(choice, "delta", None), "content", None)
+                if text:
+                    chunks.append(text)
+                    yield text
+
+        latency_seconds = time.perf_counter() - started
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens))
+
+        logger.info(
+            "Prompty stream finished",
+            extra={
+                "prompty_name": self._prepared.name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "latency_seconds": round(latency_seconds, 4),
+            },
+        )
+        self._completion = PromptCompletion(
+            content="".join(chunks).strip(),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            latency_seconds=latency_seconds,
+            messages=self._prepared.messages,
+            model=self._prepared.model,
+        )
+
+
+async def stream_prompt(
+    path: Path | str,
+    inputs: Optional[dict[str, Any]] = None,
+    extra_messages: Optional[list[dict[str, Any]]] = None,
+    client: Any = None,
+    extra_create_kwargs: Optional[dict[str, Any]] = None,
+) -> PromptStream:
+    """Prepare a Prompty file and open it as a token stream.
+
+    The returned :class:`PromptStream` has not called the API yet — the request
+    is issued on first iteration.
+    """
+    prepared = await prepare_prompt(path, inputs=inputs, extra_messages=extra_messages)
+    return PromptStream(
+        prepared,
+        client or get_openai_client(),
+        _completion_kwargs(prepared.parameters, extra_create_kwargs),
     )

@@ -7,6 +7,11 @@ runs the same stages, persisting after each one, with ``conversations.stage`` as
 the resume point.
 
 Stages: ``awaiting_idea`` -> ``clarifying`` -> ``complete``.
+
+Every entry point comes in two flavours. The ``*_stream`` generators yield
+progress events (``stage_start`` / ``delta`` / ``stage_done``) as the pipeline
+runs, which is what the UI consumes; the plain wrappers drain those generators
+and return the final state, for callers that just want the result.
 """
 
 from __future__ import annotations
@@ -14,26 +19,75 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator, Optional
 
 from synthesis import service
 from webapp import db
 
 OUTPUT_ROOT = Path(__file__).resolve().parent.parent / "outputs"
 
+#: One event emitted by the ``*_stream`` generators. ``type`` is one of
+#: ``stage_start``, ``delta``, or ``stage_done``.
+StreamEvent = dict[str, Any]
+
 _STAGE_LABELS = {
     "build_prompt": "Built the initial prompt draft",
+    "clarify": "Checked the draft for gaps",
     "plan_workflow": "Planned the workflow",
     "optimize_prompt": "Optimized the prompt",
     "tune_for_model": "Tuned for the target model",
     "humanize": "Humanized the wording",
 }
 
+# Canonical stage order, used both to decide what to skip when a conversation
+# starts partway through the pipeline and to describe each step to the UI.
+STAGE_ORDER = ["build_prompt", "clarify", "plan_workflow", "optimize_prompt", "tune_for_model", "humanize"]
 
-def _record(conversation_id: str, stage: str, completion: Any) -> str:
-    """Persist telemetry for one stage and hand back its text."""
-    db.record_stage_run(conversation_id, stage, completion)
-    return completion.content
+STAGE_INFO = {
+    "build_prompt": {
+        "title": "Build prompt",
+        "description": (
+            "Turn a rough idea into a structured first-draft prompt. Start here if you're"
+            " beginning from just a topic or a sentence or two."
+        ),
+    },
+    "clarify": {
+        "title": "Clarify",
+        "description": (
+            "Ask you clarifying questions to fill in missing detail before planning. Start"
+            " here if you already have a draft prompt but want it interrogated for gaps."
+        ),
+    },
+    "plan_workflow": {
+        "title": "Plan workflow",
+        "description": (
+            "Break the brief into an ordered plan of steps the final prompt should cover."
+            " Start here if your prompt/brief is already clear and doesn't need clarifying."
+        ),
+    },
+    "optimize_prompt": {
+        "title": "Optimize prompt",
+        "description": (
+            "Tighten the wording for stronger reasoning and cleaner output. Start here if"
+            " you already have a solid prompt and just want it optimized."
+        ),
+    },
+    "tune_for_model": {
+        "title": "Tune for model",
+        "description": (
+            "Adapt the prompt to a specific target model's conventions and quirks. Requires"
+            " a target model to be set in Settings. Start here if you already have an"
+            " optimized prompt and only need it adapted for a particular model."
+        ),
+    },
+    "humanize": {
+        "title": "Humanize",
+        "description": (
+            "Strip AI-sounding phrasing and patterns from the final draft. Start here if you"
+            " already have a finished prompt and just want the wording humanized."
+        ),
+    },
+}
 
 
 def _emit_stage(conversation_id: str, stage: str, content: str) -> dict[str, Any]:
@@ -45,6 +99,68 @@ def _emit_stage(conversation_id: str, stage: str, content: str) -> dict[str, Any
         content=content,
         payload={"stage": stage, "label": _STAGE_LABELS.get(stage, stage)},
     )
+
+
+# --------------------------------------------------------------------------- progress
+
+
+def planned_stages(conversation: dict[str, Any]) -> list[str]:
+    """The stages this conversation will actually run, in order.
+
+    Mirrors the branching in :func:`_finalize_stream` so the progress panel never
+    shows a step that is going to be skipped (no target model, humanizer off, or
+    a start stage partway down the pipeline).
+    """
+    start_stage = conversation["start_stage"] or "build_prompt"
+    start_index = STAGE_ORDER.index(start_stage) if start_stage in STAGE_ORDER else 0
+
+    stages: list[str] = []
+    for stage in STAGE_ORDER[start_index:]:
+        if stage == "clarify" and conversation["max_clarify_rounds"] <= 0:
+            continue
+        if stage == "tune_for_model" and not (conversation["target_model"] or "").strip():
+            continue
+        if stage == "humanize" and not (conversation["humanize"] or start_stage == "humanize"):
+            continue
+        stages.append(stage)
+    return stages
+
+
+def steps_snapshot(conversation_id: str, active: Optional[str] = None) -> list[dict[str, Any]]:
+    """Per-step progress for the UI panel: ``done`` / ``active`` / ``pending``.
+
+    Completion is read back from ``stage_runs`` rather than tracked in memory, so
+    the panel is still right after a reload or a conversation switch.
+    """
+    conversation = db.get_conversation(conversation_id)
+    if conversation is None:
+        return []
+    completed = db.completed_stages(conversation_id)
+
+    steps: list[dict[str, Any]] = []
+    for stage in planned_stages(conversation):
+        if stage == active or (stage == "clarify" and conversation["stage"] == "clarifying"):
+            # Clarify stays 'active' while its questions are still unanswered.
+            status = "active"
+        elif stage in completed:
+            status = "done"
+        else:
+            status = "pending"
+        steps.append({"key": stage, "title": STAGE_INFO[stage]["title"], "status": status})
+    return steps
+
+
+def _progress(conversation_id: str, event_type: str, stage: str, **extra: Any) -> StreamEvent:
+    """Build a progress event carrying a fresh snapshot of every step."""
+    active = stage if event_type == "stage_start" else None
+    return {
+        "type": event_type,
+        "stage": stage,
+        "label": _STAGE_LABELS.get(stage, stage),
+        "title": STAGE_INFO.get(stage, {}).get("title", stage),
+        "steps": steps_snapshot(conversation_id, active=active),
+        **extra,
+    }
 
 
 def format_answers(answers: list[dict[str, Any]]) -> str:
@@ -60,17 +176,48 @@ def format_answers(answers: list[dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
-async def _clarify_round(conversation: dict[str, Any], brief: str) -> dict[str, Any]:
+async def _run_stage(
+    conversation_id: str,
+    stage: str,
+    text: str,
+    outputs: dict[str, str],
+    **options: Any,
+) -> AsyncIterator[StreamEvent]:
+    """Stream one stage, persist its artifact, and record what it produced.
+
+    Yields ``stage_start``, a ``delta`` per token, then ``stage_done``. The
+    stage's finished text lands in ``outputs[stage]`` for the caller to chain
+    into the next stage — async generators can't return a value.
+    """
+    yield _progress(conversation_id, "stage_start", stage)
+
+    stream = await service.stream_stage(service.stage_request(stage, text, **options))
+    async for delta in stream:
+        yield {"type": "delta", "stage": stage, "text": delta}
+
+    completion = stream.completion
+    db.record_stage_run(conversation_id, stage, completion)
+    outputs[stage] = completion.content
+    message = _emit_stage(conversation_id, stage, completion.content)
+    yield _progress(conversation_id, "stage_done", stage, message=message)
+
+
+async def _clarify_round_stream(conversation: dict[str, Any], brief: str) -> AsyncIterator[StreamEvent]:
     """Run one Clarify call; either post an MCQ card or move on to the final stages.
 
-    Returns the frontend-visible state for the conversation.
+    Clarify is not token-streamed: it returns JSON the user never reads, so only
+    its start/finish are reported for the progress panel.
     """
     conversation_id = conversation["id"]
     rounds_used = conversation["clarify_rounds"]
     max_rounds = conversation["max_clarify_rounds"]
 
     if rounds_used >= max_rounds:
-        return await _finalize(conversation, brief)
+        async for event in _finalize_stream(conversation, brief):
+            yield event
+        return
+
+    yield _progress(conversation_id, "stage_start", "clarify")
 
     outcome = await service.clarify(brief)
     completion = outcome.get("completion")
@@ -84,7 +231,10 @@ async def _clarify_round(conversation: dict[str, Any], brief: str) -> dict[str, 
 
     if outcome.get("status") == "ready" or not questions:
         conversation = db.get_conversation(conversation_id) or conversation
-        return await _finalize(conversation, summary)
+        yield _progress(conversation_id, "stage_done", "clarify")
+        async for event in _finalize_stream(conversation, summary):
+            yield event
+        return
 
     db.supersede_question_messages(conversation_id)
     db.add_message(
@@ -95,35 +245,54 @@ async def _clarify_round(conversation: dict[str, Any], brief: str) -> dict[str, 
         payload={"questions": questions, "round": rounds_used, "max_rounds": max_rounds},
     )
     db.update_conversation(conversation_id, stage="clarifying")
-    return _state(conversation_id)
+    yield _progress(conversation_id, "stage_done", "clarify")
 
 
-async def _finalize(conversation: dict[str, Any], brief: str) -> dict[str, Any]:
-    """Run planner -> optimizer -> [model tuning] -> [humanizer], then save the result."""
+async def _finalize_stream(
+    conversation: dict[str, Any], brief: str, start_stage: str = "plan_workflow"
+) -> AsyncIterator[StreamEvent]:
+    """Run planner -> optimizer -> [model tuning] -> [humanizer], then save the result.
+
+    ``start_stage`` lets the caller jump straight into the middle of this chain
+    (see ``STAGE_ORDER``): any stage before it is skipped and its artifact falls
+    back to ``brief`` untouched, rather than being generated.
+    """
     conversation_id = conversation["id"]
     db.supersede_question_messages(conversation_id)
+    start_index = STAGE_ORDER.index(start_stage) if start_stage in STAGE_ORDER else STAGE_ORDER.index("plan_workflow")
+    outputs: dict[str, str] = {}
 
-    planned = await service.plan_workflow(brief)
-    plan = _record(conversation_id, "plan_workflow", planned)
-    _emit_stage(conversation_id, "plan_workflow", plan)
+    plan = ""
+    if start_index <= STAGE_ORDER.index("plan_workflow"):
+        async for event in _run_stage(conversation_id, "plan_workflow", brief, outputs):
+            yield event
+        plan = outputs["plan_workflow"]
 
-    optimized = await service.optimize_prompt(brief)
-    optimized_prompt = _record(conversation_id, "optimize_prompt", optimized)
-    _emit_stage(conversation_id, "optimize_prompt", optimized_prompt)
+    optimized_prompt = brief
+    if start_index <= STAGE_ORDER.index("optimize_prompt"):
+        async for event in _run_stage(conversation_id, "optimize_prompt", brief, outputs):
+            yield event
+        optimized_prompt = outputs["optimize_prompt"]
 
     final_prompt = optimized_prompt
     target_model = (conversation["target_model"] or "").strip()
-    if target_model:
-        tuned = await service.tune_for_model(
-            final_prompt, target_model, model_notes=conversation["model_notes"] or ""
-        )
-        final_prompt = _record(conversation_id, "tune_for_model", tuned)
-        _emit_stage(conversation_id, "tune_for_model", final_prompt)
+    if target_model and start_index <= STAGE_ORDER.index("tune_for_model"):
+        async for event in _run_stage(
+            conversation_id,
+            "tune_for_model",
+            final_prompt,
+            outputs,
+            target_model=target_model,
+            model_notes=conversation["model_notes"] or "",
+        ):
+            yield event
+        final_prompt = outputs["tune_for_model"]
 
-    if conversation["humanize"]:
-        humanized = await service.humanize(final_prompt)
-        final_prompt = _record(conversation_id, "humanize", humanized)
-        _emit_stage(conversation_id, "humanize", final_prompt)
+    run_humanize = conversation["humanize"] or start_stage == "humanize"
+    if run_humanize and start_index <= STAGE_ORDER.index("humanize"):
+        async for event in _run_stage(conversation_id, "humanize", final_prompt, outputs):
+            yield event
+        final_prompt = outputs["humanize"]
 
     output_path = _save_output(conversation_id, brief, plan, final_prompt, target_model)
     db.update_conversation(
@@ -143,7 +312,6 @@ async def _finalize(conversation: dict[str, Any], brief: str) -> dict[str, Any]:
         payload={"output_path": str(output_path), "target_model": target_model},
     )
     _save_transcript(conversation_id)
-    return _state(conversation_id)
 
 
 def _save_output(
@@ -212,10 +380,21 @@ def _state(conversation_id: str) -> dict[str, Any]:
         "conversation": db.get_conversation(conversation_id),
         "messages": db.list_messages(conversation_id),
         "usage": db.usage_summary(conversation_id),
+        "steps": steps_snapshot(conversation_id),
     }
 
 
-async def start(conversation_id: str, raw_idea: str) -> dict[str, Any]:
+async def _drain(conversation_id: str, events: AsyncIterator[StreamEvent]) -> dict[str, Any]:
+    """Run a ``*_stream`` generator to completion and return the resulting state."""
+    async for _event in events:
+        pass
+    return _state(conversation_id)
+
+
+# --------------------------------------------------------------------------- entry points
+
+
+async def start_stream(conversation_id: str, raw_idea: str) -> AsyncIterator[StreamEvent]:
     """Handle the user's opening idea: build a draft, then start clarifying."""
     conversation = db.get_conversation(conversation_id)
     if conversation is None:
@@ -229,16 +408,46 @@ async def start(conversation_id: str, raw_idea: str) -> dict[str, Any]:
 
     db.update_conversation(conversation_id, raw_idea=raw_idea, stage="running")
 
-    built = await service.build_prompt(raw_idea, audience=conversation["audience"])
-    built_prompt = _record(conversation_id, "build_prompt", built)
-    _emit_stage(conversation_id, "build_prompt", built_prompt)
-    db.update_conversation(conversation_id, built_prompt=built_prompt, brief=built_prompt)
+    start_stage = conversation["start_stage"] or "build_prompt"
 
+    if start_stage == "build_prompt":
+        outputs: dict[str, str] = {}
+        async for event in _run_stage(
+            conversation_id, "build_prompt", raw_idea, outputs, audience=conversation["audience"]
+        ):
+            yield event
+        built_prompt = outputs["build_prompt"]
+        db.update_conversation(conversation_id, built_prompt=built_prompt, brief=built_prompt)
+        conversation = db.get_conversation(conversation_id) or conversation
+        async for event in _clarify_round_stream(conversation, built_prompt):
+            yield event
+        return
+
+    if start_stage == "clarify":
+        # The user's message is already a draft prompt/brief, not a raw idea.
+        db.update_conversation(conversation_id, built_prompt=raw_idea, brief=raw_idea)
+        conversation = db.get_conversation(conversation_id) or conversation
+        async for event in _clarify_round_stream(conversation, raw_idea):
+            yield event
+        return
+
+    # plan_workflow / optimize_prompt / tune_for_model / humanize: everything
+    # before the chosen stage is skipped and the message is treated as the
+    # brief/prompt those later stages expect as input.
+    db.update_conversation(
+        conversation_id,
+        built_prompt=raw_idea,
+        brief=raw_idea,
+        clarify_rounds=conversation["max_clarify_rounds"],
+    )
     conversation = db.get_conversation(conversation_id) or conversation
-    return await _clarify_round(conversation, built_prompt)
+    async for event in _finalize_stream(conversation, raw_idea, start_stage=start_stage):
+        yield event
 
 
-async def submit_answers(conversation_id: str, answers: list[dict[str, Any]]) -> dict[str, Any]:
+async def submit_answers_stream(
+    conversation_id: str, answers: list[dict[str, Any]]
+) -> AsyncIterator[StreamEvent]:
     """Fold MCQ answers into the brief and run the next Clarify round."""
     conversation = db.get_conversation(conversation_id)
     if conversation is None:
@@ -253,10 +462,11 @@ async def submit_answers(conversation_id: str, answers: list[dict[str, Any]]) ->
     brief = f"{conversation['brief']}\n\nAdditional detail from user:\n{answer_text}"
     db.update_conversation(conversation_id, brief=brief, stage="running")
     conversation = db.get_conversation(conversation_id) or conversation
-    return await _clarify_round(conversation, brief)
+    async for event in _clarify_round_stream(conversation, brief):
+        yield event
 
 
-async def skip_clarification(conversation_id: str) -> dict[str, Any]:
+async def skip_clarification_stream(conversation_id: str) -> AsyncIterator[StreamEvent]:
     """User chose 'looks good, continue' — jump straight to the final stages."""
     conversation = db.get_conversation(conversation_id)
     if conversation is None:
@@ -265,4 +475,20 @@ async def skip_clarification(conversation_id: str) -> dict[str, Any]:
     db.add_message(conversation_id, role="user", kind="text", content="Skip the questions — use your best judgment.")
     db.update_conversation(conversation_id, stage="running")
     conversation = db.get_conversation(conversation_id) or conversation
-    return await _finalize(conversation, conversation["brief"])
+    async for event in _finalize_stream(conversation, conversation["brief"]):
+        yield event
+
+
+async def start(conversation_id: str, raw_idea: str) -> dict[str, Any]:
+    """Blocking form of :func:`start_stream`."""
+    return await _drain(conversation_id, start_stream(conversation_id, raw_idea))
+
+
+async def submit_answers(conversation_id: str, answers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Blocking form of :func:`submit_answers_stream`."""
+    return await _drain(conversation_id, submit_answers_stream(conversation_id, answers))
+
+
+async def skip_clarification(conversation_id: str) -> dict[str, Any]:
+    """Blocking form of :func:`skip_clarification_stream`."""
+    return await _drain(conversation_id, skip_clarification_stream(conversation_id))

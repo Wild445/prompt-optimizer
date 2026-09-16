@@ -22,11 +22,10 @@ model:
     # verbosity: low
 inputs:
   audience:
-    type: string
+    kind: string
     description: Who or what will consume the resulting prompt (e.g. "GPT-5.4 coding assistant").
     default: "a general-purpose LLM"
-sample:
-  audience: "a general-purpose LLM"
+    example: "a general-purpose LLM"
 ---
 system:
 You are the Prompt Builder stage of a prompt-synthesis pipeline. You turn a rough,

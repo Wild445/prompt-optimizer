@@ -16,21 +16,91 @@ templated into the system message.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from runtime import PromptCompletion, complete_prompt
+from runtime import PromptCompletion, PromptStream, complete_prompt, stream_prompt
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+#: Stages that emit prose and can therefore be rendered token-by-token. Clarify
+#: is excluded on purpose: it returns JSON the user never sees.
+STREAMING_STAGES: tuple[str, ...] = (
+    "build_prompt",
+    "plan_workflow",
+    "optimize_prompt",
+    "tune_for_model",
+    "humanize",
+)
+
+
+@dataclass(frozen=True)
+class StageRequest:
+    """One stage's fully-resolved call: which Prompty file, with what inputs.
+
+    Building the request is separated from running it so the same wiring serves
+    both ``run_stage`` (blocking) and ``stream_stage`` (token deltas).
+    """
+
+    stage: str
+    path: Path
+    inputs: dict[str, Any] = field(default_factory=dict)
+    messages: list[dict[str, Any]] = field(default_factory=list)
+
+
+def stage_request(
+    stage: str,
+    text: str,
+    *,
+    audience: str = "a general-purpose LLM",
+    target_model: str = "",
+    model_notes: str = "",
+) -> StageRequest:
+    """Build the call for one streamable stage.
+
+    Args:
+        stage: A key from :data:`STREAMING_STAGES`.
+        text: The user-supplied payload for the stage (idea, brief, or draft).
+        audience: Only used by ``build_prompt``.
+        target_model: Required by ``tune_for_model``.
+        model_notes: Reference material for ``tune_for_model``.
+
+    Raises:
+        ValueError: If ``stage`` is not a streamable stage.
+    """
+    user_turn = [{"role": "user", "content": text}]
+    if stage == "build_prompt":
+        return StageRequest(stage, _PROMPTS_DIR / "01_prompt_builder.prompty", {"audience": audience}, user_turn)
+    if stage == "plan_workflow":
+        return StageRequest(stage, _PROMPTS_DIR / "03_workflow_planner.prompty", {}, user_turn)
+    if stage == "optimize_prompt":
+        return StageRequest(stage, _PROMPTS_DIR / "04_prompt_optimizer.prompty", {}, user_turn)
+    if stage == "tune_for_model":
+        return StageRequest(
+            stage,
+            _PROMPTS_DIR / "05_model_specific_prompting.prompty",
+            {"target_model": target_model, "model_notes": model_notes or "(none supplied)"},
+            user_turn,
+        )
+    if stage == "humanize":
+        return StageRequest(stage, _PROMPTS_DIR / "06_ai_humanizer.prompty", {}, user_turn)
+    raise ValueError(f"Unknown or non-streamable stage: {stage!r}")
+
+
+async def run_stage(request: StageRequest) -> PromptCompletion:
+    """Run a stage and wait for the whole completion."""
+    return await complete_prompt(request.path, inputs=request.inputs, extra_messages=request.messages)
+
+
+async def stream_stage(request: StageRequest) -> PromptStream:
+    """Open a stage as a token stream; iterate it, then read ``.completion``."""
+    return await stream_prompt(request.path, inputs=request.inputs, extra_messages=request.messages)
 
 
 async def build_prompt(raw_idea: str, audience: str = "a general-purpose LLM") -> PromptCompletion:
     """Stage 1 — turn a rough idea into a structured prompt draft."""
-    return await complete_prompt(
-        _PROMPTS_DIR / "01_prompt_builder.prompty",
-        inputs={"audience": audience},
-        extra_messages=[{"role": "user", "content": raw_idea}],
-    )
+    return await run_stage(stage_request("build_prompt", raw_idea, audience=audience))
 
 
 def _normalize_questions(raw: Any) -> list[dict[str, Any]]:
@@ -94,18 +164,12 @@ async def clarify(draft: str, max_questions: int = 4) -> dict[str, Any]:
 
 async def plan_workflow(brief: str) -> PromptCompletion:
     """Stage 3 — break a clarified brief into an ordered plan of steps."""
-    return await complete_prompt(
-        _PROMPTS_DIR / "03_workflow_planner.prompty",
-        extra_messages=[{"role": "user", "content": brief}],
-    )
+    return await run_stage(stage_request("plan_workflow", brief))
 
 
 async def optimize_prompt(prompt_draft: str) -> PromptCompletion:
     """Stage 4 — tighten a prompt for stronger reasoning / cleaner output."""
-    return await complete_prompt(
-        _PROMPTS_DIR / "04_prompt_optimizer.prompty",
-        extra_messages=[{"role": "user", "content": prompt_draft}],
-    )
+    return await run_stage(stage_request("optimize_prompt", prompt_draft))
 
 
 async def tune_for_model(prompt_draft: str, target_model: str, model_notes: str = "") -> PromptCompletion:
@@ -116,16 +180,11 @@ async def tune_for_model(prompt_draft: str, target_model: str, model_notes: str 
     model newer than the calling deployment's training cutoff — without it the
     stage stays deliberately generic rather than inventing conventions.
     """
-    return await complete_prompt(
-        _PROMPTS_DIR / "05_model_specific_prompting.prompty",
-        inputs={"target_model": target_model, "model_notes": model_notes or "(none supplied)"},
-        extra_messages=[{"role": "user", "content": prompt_draft}],
+    return await run_stage(
+        stage_request("tune_for_model", prompt_draft, target_model=target_model, model_notes=model_notes)
     )
 
 
 async def humanize(content: str) -> PromptCompletion:
     """Stage 6 — strip AI-sounding phrasing/patterns from a draft."""
-    return await complete_prompt(
-        _PROMPTS_DIR / "06_ai_humanizer.prompty",
-        extra_messages=[{"role": "user", "content": content}],
-    )
+    return await run_stage(stage_request("humanize", content))

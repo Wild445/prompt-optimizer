@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NIQ Prompt Creator</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css?v=4" />
 </head>
 <body>
   <div class="layout">
@@ -12,6 +13,13 @@
       <div class="sidebar-head">
         <h1>Prompt Creator</h1>
         <button id="new-chat" class="btn-primary">+ New chat</button>
+      </div>
+      <div class="stage-picker">
+        <div class="stage-picker-head">
+          <span>Pipeline steps</span>
+          <span class="stage-picker-hint">Pick where to start</span>
+        </div>
+        <div id="stage-list" class="stage-list"></div>
       </div>
       <nav id="conversation-list" class="conversation-list" aria-label="Conversations"></nav>
       <div class="sidebar-foot">
@@ -62,8 +70,19 @@
         <button id="send" class="btn-primary">Send</button>
       </footer>
     </main>
+
+    <aside class="progress-panel" aria-label="Pipeline progress">
+      <div class="progress-head">
+        <span>Progress</span>
+        <span id="progress-status" class="progress-status">Idle</span>
+      </div>
+      <ol id="progress-list" class="progress-list" aria-live="polite"></ol>
+      <div class="progress-foot">
+        <span id="progress-hint">Steps tick off as each one finishes.</span>
+      </div>
+    </aside>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

@@ -7,6 +7,10 @@ import webbrowser
 
 import uvicorn
 
+from config import load_env
+
+load_env()
+
 HOST = os.getenv("PROMPT_CREATOR_HOST", "127.0.0.1")
 PORT = int(os.getenv("PROMPT_CREATOR_PORT", "8000"))
 
