@@ -8,6 +8,7 @@ Everything is local: SQLite under ``data/``, generated prompts under
 from __future__ import annotations
 
 import json
+import os
 import traceback
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -30,6 +31,18 @@ app = FastAPI(title="NIQ Prompt Creator", docs_url="/api/docs")
 def _startup() -> None:
     db.connect()
     runner.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    if os.getenv("PROMPT_CREATOR_FAKE_LLM") == "1":
+        # Lets the real chat UI be driven end to end with no LLM calls, for
+        # manual walkthroughs of the pipeline. See fake_llm.py.
+        for key in ("cis_llm_endpoint", "cis_llm_apikey", "cis_llm_apiversion", "CIS_LLM_4_DOT_1_DEPLOYMENT"):
+            os.environ.setdefault(key, "fake")
+
+        import runtime
+        from fake_llm import FakeOpenAIClient
+
+        fake_client = FakeOpenAIClient()
+        runtime.get_openai_client = lambda: fake_client
+        logger.warning("PROMPT_CREATOR_FAKE_LLM=1: all LLM calls are faked, no real completions will be made")
     missing = missing_env_vars()
     if missing:
         logger.warning(
