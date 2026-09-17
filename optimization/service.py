@@ -191,34 +191,31 @@ async def consolidate_criteria(
     return {"criteria": assign_ids(criteria), "completion": completion}
 
 
-async def build_judge_prompt(scaffold: str, criteria: list[dict[str, Any]]) -> dict[str, Any]:
+def build_judge_prompt(scaffold: str, criteria: list[dict[str, Any]]) -> str:
     """Step 5b — fold the final criteria into the scaffold to get the judge prompt.
 
-    If the agent leaves the placeholder behind (or returns something unusable),
-    the substitution is done here instead: the judge prompt is the one artifact
-    the whole loop runs on, so it must not depend on the model getting a
-    mechanical edit right.
+    Deliberately not an LLM call. This is a mechanical substitution, and a model
+    asked to perform it re-words criteria on the way through, revives ones the
+    user deleted, and adds its own — so the judge ends up scoring a list nobody
+    approved. The list that comes in is the list that goes out, verbatim.
+
+    The scaffold is expected to carry the ``{{SUCCESS_CRITERIA}}`` placeholder on
+    a line of its own; if the scaffold stage dropped it, the ``# Success
+    criteria`` section is rewritten in place (discarding anything the scaffold
+    invented there), and only a scaffold missing that section too gets one
+    appended.
     """
-    completion = await complete_prompt(
-        _PROMPTS_DIR / "13_judge_builder.prompty",
-        extra_messages=[
-            {
-                "role": "user",
-                "content": "\n\n".join(
-                    [
-                        _block("JUDGE_SCAFFOLD", scaffold),
-                        _block("SUCCESS_CRITERIA", criteria_as_text(criteria)),
-                    ]
-                ),
-            }
-        ],
+    block = criteria_as_text(criteria)
+    if _JUDGE_PLACEHOLDER in scaffold:
+        return scaffold.replace(_JUDGE_PLACEHOLDER, block)
+    section = re.search(
+        r"^(#+\s*Success criteria[^\n]*\n)(.*?)(?=^#+\s|\Z)",
+        scaffold,
+        re.DOTALL | re.MULTILINE | re.IGNORECASE,
     )
-    judge_prompt = completion.content
-    if _JUDGE_PLACEHOLDER in judge_prompt or not judge_prompt.strip():
-        judge_prompt = (scaffold if judge_prompt.strip() == "" else judge_prompt).replace(
-            _JUDGE_PLACEHOLDER, criteria_as_text(criteria)
-        )
-    return {"judge_prompt": judge_prompt, "completion": completion}
+    if section:
+        return scaffold[: section.start(2)] + f"{block}\n\n" + scaffold[section.end(2) :]
+    return f"{scaffold.rstrip()}\n\n# Success criteria\n{block}\n"
 
 
 async def analyze_failures(

@@ -79,7 +79,19 @@ async def main() -> None:
         "criteria -> judge",
         optimizer.submit_criteria_stream(optimization_id, criteria, additions="Never exceeds three bullets"),
     )
-    print(f"  judge prompt: {len(opt_db.get_optimization(optimization_id)['judge_prompt'])} chars")
+
+    # The judge prompt is assembled in Python, so the criteria stored against the
+    # session and the criteria the judge reads have to be the same text.
+    final = opt_db.list_criteria(optimization_id)
+    judge_prompt = opt_db.get_optimization(optimization_id)["judge_prompt"]
+    print(f"  judge prompt: {len(judge_prompt)} chars")
+    print(f"  final criteria: {[c['title'] for c in final]}")
+    for criterion in final:
+        assert criterion["title"] in judge_prompt, f"{criterion['id']} missing from the judge prompt"
+        assert criterion["description"] in judge_prompt, f"{criterion['id']} re-worded in the judge prompt"
+    assert "{{SUCCESS_CRITERIA}}" not in judge_prompt, "the placeholder was left in the judge prompt"
+    assert judge_prompt.count(" — ") == len(final), "the judge prompt holds criteria that are not on the list"
+    print("  verbatim check: the judge prompt holds exactly the stored criteria, word for word")
 
     cases = dataset.parse_dataset(dataset.sample_workbook(), dataset.sample_filename())
     optimizer.store_dataset(

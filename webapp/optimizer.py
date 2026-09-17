@@ -441,12 +441,13 @@ async def submit_criteria_stream(
     final_criteria = merged["criteria"]
     opt_db.replace_criteria(optimization_id, final_criteria, iteration=optimization["iteration"])
 
-    built = await service.build_judge_prompt(optimization["judge_scaffold"], final_criteria)
-    opt_db.record_run(optimization_id, "judge", built.get("completion"))
-    opt_db.update_optimization(optimization_id, judge_prompt=built["judge_prompt"])
-    _write(optimization_id, "judge_prompt.md", built["judge_prompt"])
+    # Substituted in Python, not written by a model: the criteria the judge
+    # scores against are the consolidated list above, word for word.
+    judge_prompt = service.build_judge_prompt(optimization["judge_scaffold"], final_criteria)
+    opt_db.update_optimization(optimization_id, judge_prompt=judge_prompt)
+    _write(optimization_id, "judge_prompt.md", judge_prompt)
     _write(optimization_id, "criteria.json", json.dumps(final_criteria, indent=2))
-    _emit(optimization_id, "judge", built["judge_prompt"], criteria=final_criteria)
+    _emit(optimization_id, "judge", judge_prompt, criteria=final_criteria)
     yield _progress(optimization_id, "step_done", "judge")
 
     _post_dataset_form(optimization_id)
@@ -1020,10 +1021,9 @@ async def _apply_new_criteria(
 
     combined = service.assign_ids([*existing, *added])
     opt_db.replace_criteria(optimization_id, combined, iteration=iteration)
-    built = await service.build_judge_prompt(optimization["judge_scaffold"], combined)
-    opt_db.record_run(optimization_id, "judge", built.get("completion"), iteration=iteration)
-    opt_db.update_optimization(optimization_id, judge_prompt=built["judge_prompt"])
-    _write(optimization_id, "judge_prompt.md", built["judge_prompt"])
+    judge_prompt = service.build_judge_prompt(optimization["judge_scaffold"], combined)
+    opt_db.update_optimization(optimization_id, judge_prompt=judge_prompt)
+    _write(optimization_id, "judge_prompt.md", judge_prompt)
     _write(optimization_id, "criteria.json", json.dumps(combined, indent=2))
     opt_db.add_message(
         optimization_id,

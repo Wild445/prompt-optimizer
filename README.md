@@ -30,7 +30,6 @@ prompts/                         # versioned .prompty files — edit these, not 
   10_judge_scaffold.prompty      # 10-15: the optimization loop
   11_criteria_drafter.prompty
   12_criteria_consolidator.prompty
-  13_judge_builder.prompty
   14_failure_analyst.prompty
   15_prompt_revisor.prompty
 synthesis/
@@ -126,8 +125,9 @@ Open **Prompt Optimization** in the sidebar. The loop, in order:
 2. **Say how it fails**, one problem per line. Another agent turns those
    observations into success criteria a judge can score `true`/`false`.
 3. **Review the criteria** — edit, delete, or add your own. A consolidator merges
-   both lists, stamps them `C1..Cn`, and a builder folds them into the judge
-   prompt.
+   both lists and stamps them `C1..Cn`; that list is then substituted into the
+   judge prompt verbatim, in Python, so what the judge scores against is exactly
+   the list stored against the session.
 4. **Upload the test cases** as `.xlsx` or `.csv` (there is a *Download the
    template* button):
 

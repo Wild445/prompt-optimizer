@@ -28,7 +28,6 @@ _DEFAULT_PROSE = "This is a canned offline completion standing in for the real L
 #: installed prompty release never forwards the `response_format:` frontmatter,
 #: so there is no structured-output signal to key off.
 _JUDGE_SCAFFOLD_MARKER = "Judge Scaffold stage of a prompt-optimization pipeline"
-_JUDGE_BUILDER_MARKER = "Judge Builder stage of a prompt-optimization pipeline"
 _CRITERIA_DRAFTER_MARKER = "Criteria Drafter stage of a prompt-optimization pipeline"
 _CRITERIA_CONSOLIDATOR_MARKER = "Criteria Consolidator stage of a prompt-optimization pipeline"
 _FAILURE_ANALYST_MARKER = "Failure Analyst stage of a prompt-optimization pipeline"
@@ -136,8 +135,6 @@ def _fake_content(messages: list[dict[str, Any]], kwargs: dict[str, Any]) -> str
         return _fake_criteria_json("observation")
     if _CRITERIA_CONSOLIDATOR_MARKER in system:
         return _fake_criteria_json("added")
-    if _JUDGE_BUILDER_MARKER in system:
-        return _FAKE_SCAFFOLD.replace("{{SUCCESS_CRITERIA}}", "(criteria substituted by the offline fake)")
     if _FAILURE_ANALYST_MARKER in system:
         return json.dumps(
             {
