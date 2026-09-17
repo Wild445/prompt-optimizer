@@ -504,6 +504,25 @@ def list_messages(optimization_id: str) -> list[dict[str, Any]]:
     return messages
 
 
+def latest_message(optimization_id: str, kind: str) -> Optional[dict[str, Any]]:
+    """The newest transcript entry of one kind, payload already decoded.
+
+    Used to read a pause's own card back when the user acts on it — the proposed
+    changes the approval card is waiting on live in its payload and nowhere else,
+    so this is what makes that step survive a reload.
+    """
+    ensure_schema()
+    row = connect().execute(
+        "SELECT * FROM optimization_messages WHERE optimization_id = ? AND kind = ? ORDER BY id DESC LIMIT 1",
+        (optimization_id, kind),
+    ).fetchone()
+    if row is None:
+        return None
+    message = dict(row)
+    message["payload"] = json.loads(message["payload"]) if message["payload"] else None
+    return message
+
+
 def supersede_kind(optimization_id: str, kind: str, suffix: str = "_done", **payload_updates: Any) -> None:
     """Retire every open interactive card of one kind so it stops accepting input.
 

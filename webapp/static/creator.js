@@ -2,7 +2,7 @@
    Shared helpers live in common.js; the shell that switches between this
    workspace and the optimizer lives in main.js. */
 
-import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, renderMarkdown } from "./common.js";
+import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, renameInline, renderMarkdown } from "./common.js";
 
   const state = {
     conversations: [],
@@ -54,7 +54,14 @@ import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, render
     }
   }
   
+  /* A rename in progress pins the list: opening a chat (or any other refresh)
+     would otherwise rebuild the row under the editor mid-keystroke. The skipped
+     render is replayed as soon as the edit ends. */
+  let renaming = false;
+  let sidebarStale = false;
+
   function renderSidebar() {
+    if (renaming) { sidebarStale = true; return; }
     const list = el("conversation-list");
     const count = el("conversation-count");
     list.innerHTML = "";
@@ -80,9 +87,26 @@ import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, render
             <span>${formatCost(conversation.estimated_cost)}</span>
           </div>
         </div>
+        <button type="button" class="conversation-rename" title="Rename chat" aria-label="Rename chat">&#9998;</button>
         <button type="button" class="conversation-delete" title="Delete chat" aria-label="Delete chat">&#10005;</button>`;
-      node.querySelector(".conversation-name").textContent = conversation.title;
+      const name = node.querySelector(".conversation-name");
+      name.textContent = conversation.title;
       node.onclick = () => selectConversation(conversation.id);
+      const startRename = (event) => {
+        // The pencil opens the editor without also opening the chat.
+        event.stopPropagation();
+        renaming = true;
+        renameInline(name, {
+          value: conversation.title,
+          onSave: (title) => renameConversation(conversation.id, title),
+          onEnd: () => {
+            renaming = false;
+            if (sidebarStale) { sidebarStale = false; renderSidebar(); }
+          },
+        });
+      };
+      node.querySelector(".conversation-rename").onclick = startRename;
+      name.ondblclick = startRename;
       node.querySelector(".conversation-delete").onclick = (event) => {
         // Without this the row's own click handler would re-open what we just deleted.
         event.stopPropagation();
@@ -92,6 +116,17 @@ import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, render
     }
   }
   
+  async function renameConversation(conversationId, title) {
+    await api(`/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify({ title }) });
+    const row = state.conversations.find((item) => item.id === conversationId);
+    if (row) row.title = title;
+    if (state.conversation && state.conversation.id === conversationId) {
+      state.conversation.title = title;
+      el("conversation-title").textContent = title;
+    }
+    await loadConversations();
+  }
+
   async function deleteConversation(conversation) {
     if (state.busy) return;
     if (!window.confirm(`Delete "${conversation.title}"? Its messages and usage history are removed from the database.`)) {
@@ -661,6 +696,20 @@ import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, render
 
     el("new-chat").onclick = newConversation;
     el("send").onclick = send;
+
+    // The open chat is renamed from its own heading too, so nobody has to find
+    // the matching sidebar row first.
+    const heading = el("conversation-title");
+    heading.classList.add("renamable");
+    heading.title = "Click to rename";
+    heading.onclick = () => {
+      if (!state.currentId) return;
+      renameInline(heading, {
+        value: (state.conversation && state.conversation.title) || "",
+        onSave: (title) => renameConversation(state.currentId, title),
+      });
+    };
+
     el("toggle-settings").onclick = () => {
       const panel = el("settings");
       panel.hidden = !panel.hidden;

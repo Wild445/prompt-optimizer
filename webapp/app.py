@@ -350,6 +350,18 @@ class ReviewSubmission(BaseModel):
     feedback: list[CaseFeedback] = []
 
 
+class ChangeApproval(BaseModel):
+    """Positions into the proposal lists on the open ``changes_form`` card.
+
+    Approval is sent as what the user kept rather than what they dropped, so a
+    client that says nothing approves nothing — the safe direction for a step
+    whose whole purpose is that no edit lands unasked.
+    """
+
+    approved_changes: list[int] = []
+    approved_criteria: list[int] = []
+
+
 def _require_optimization(optimization_id: str) -> dict[str, Any]:
     optimization = opt_db.get_optimization(optimization_id)
     if optimization is None:
@@ -382,6 +394,7 @@ def _record_optimizer_failure(optimization_id: str, error: Exception) -> None:
         "dataset_form": "awaiting_dataset",
         "run_form": "ready_to_run",
         "results_form": "reviewing_results",
+        "changes_form": "reviewing_changes",
         "iteration_form": "awaiting_iteration",
     }
     resume = "awaiting_prompt"
@@ -534,6 +547,16 @@ def post_optimizer_review(optimization_id: str, body: ReviewSubmission) -> Strea
     _require_optimization(optimization_id)
     feedback = [item.model_dump() for item in body.feedback]
     return _optimizer_stream(optimization_id, optimizer.submit_review_stream(optimization_id, feedback))
+
+
+@app.post("/api/optimizations/{optimization_id}/changes/stream")
+def post_optimizer_changes(optimization_id: str, body: ChangeApproval) -> StreamingResponse:
+    """Apply the proposed changes the user approved and revise the prompt."""
+    _require_optimization(optimization_id)
+    return _optimizer_stream(
+        optimization_id,
+        optimizer.submit_changes_stream(optimization_id, body.approved_changes, body.approved_criteria),
+    )
 
 
 @app.post("/api/optimizations/{optimization_id}/stop")

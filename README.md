@@ -83,6 +83,12 @@ Needs Python 3.10+ (`chat_common/common/logging.py` uses `str | None` at runtime
 - **Left sidebar** lists every conversation, newest first; click one to switch
   back to it with its full history. **+ New chat** mints a new `conversation_id`
   and carries your current settings (target model, notes, humanizer) forward.
+- **Rename anything.** Chats and optimizations are both born with a placeholder
+  name, which makes a long history unreadable. The pencil on a history row — or
+  a double-click on its name, or a click on the open session's heading — turns
+  the name into a text box: Enter or clicking away saves, Escape reverts, and an
+  empty name leaves the old one alone. It is a `PATCH .../{id}` of `title`, so
+  nothing else about the session moves.
 - **Clarification is multiple choice.** Stage 2 returns 2-5 concrete options per
   question; the UI renders radios (or checkboxes when the question is
   `multi_select`) plus an **Other** free-text box on every question. *Skip — use
@@ -142,12 +148,20 @@ Open **Prompt Optimization** in the sidebar. The loop, in order:
    the verdicts you disagree with. A flagged row opens a reason box and
    **Continue** stays disabled until every flagged row has one — so a
    disagreement can never be recorded without the reason that makes it useful.
-7. **Analyze and revise.** An analyst reads the run plus your remarks into a list
-   of changes, each tied to the criteria it fixes and the part of the prompt
-   responsible. A remark no criterion covers becomes a *new* success criterion,
-   added to the judge before the next run. A revisor applies the changes and
-   produces the next prompt version.
-8. **Run again** against the same test cases, or stop.
+7. **Analyze.** An analyst reads the run plus your remarks into a list of
+   changes, each tied to the criteria it fixes and the part of the prompt
+   responsible. A remark no criterion covers is proposed as a *new* success
+   criterion.
+8. **Approve the changes.** Nothing is applied until you say so. Every proposed
+   change and every proposed criterion is listed with the criteria it addresses,
+   the section of the prompt it targets, and the evidence behind it; each starts
+   **Approved** and one click turns it into **Rejected**. Only the approved ones
+   reach the revisor and the judge — a rejected change is recorded in the version
+   notes as turned down and never touches the prompt. Reject everything and the
+   prompt stays exactly where it is.
+9. **Revise.** A revisor applies the approved changes and produces the next
+   prompt version.
+10. **Run again** against the same test cases, or stop.
 
 Everything lands in `outputs/optimizations/<id>/`:
 
@@ -157,6 +171,7 @@ Everything lands in `outputs/optimizations/<id>/`:
 | `judge_scaffold.md` / `judge_prompt.md` | the judge skeleton and the finished judge |
 | `criteria.json` | the active success criteria, with their ids |
 | `iteration_<n>_results.csv` | message_id, input, params, response, verdict, failed criteria, reason, and your agreement |
+| `prompt_v<n>` change notes | inside `session.json`: the changes you approved, and a count of the ones you rejected |
 | `session.json` | the whole session, including every iteration |
 
 Test cases run `PROMPT_OPTIMIZER_CONCURRENCY` at a time (default 4). A case that
@@ -166,8 +181,8 @@ abandoning the run.
 ### API
 
 `GET/POST /api/optimizations`, `GET/PATCH/DELETE /api/optimizations/{id}`,
-`POST /api/optimizations/{id}/prompt|observations|criteria|run|review` (each
-`/stream`), `POST /api/optimizations/{id}/dataset` (multipart),
+`POST /api/optimizations/{id}/prompt|observations|criteria|run|review|changes`
+(each `/stream`), `POST /api/optimizations/{id}/dataset` (multipart),
 `POST /api/optimizations/{id}/stop`, `GET /api/optimizations/{id}/results.csv`
 and `/prompt`, plus `GET /api/optimizer/steps` and
 `/api/optimizer/dataset-template`.

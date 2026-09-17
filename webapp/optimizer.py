@@ -13,7 +13,9 @@ The loop::
     awaiting_dataset       user uploads the test cases
     ready_to_run           -> run the prompt, then the judge, over every case
     reviewing_results      user flags the verdicts they disagree with
-                           -> change list -> revised prompt
+                           -> change list
+    reviewing_changes      user approves or rejects each proposed change
+                           -> revised prompt built from the approved ones only
     awaiting_iteration     user decides whether to run again  -> ready_to_run
 
 Every entry point is an async generator of progress events, consumed by the UI
@@ -53,6 +55,7 @@ STEP_ORDER = [
     "evaluate",
     "review",
     "analyze",
+    "approve",
     "revise",
 ]
 
@@ -89,9 +92,13 @@ STEP_INFO = {
         "title": "Analyze failures",
         "description": "Reads the run and your remarks into a list of changes, plus any criteria the judge is missing.",
     },
+    "approve": {
+        "title": "Approve the changes",
+        "description": "You approve or reject each proposed edit. Only the ones you approve reach the revision.",
+    },
     "revise": {
         "title": "Revise the prompt",
-        "description": "Applies those changes and produces the next version of the prompt.",
+        "description": "Applies the approved changes and produces the next version of the prompt.",
     },
 }
 
@@ -105,6 +112,7 @@ _USER_STAGES = {
     "awaiting_dataset": "dataset",
     "ready_to_run": "respond",
     "reviewing_results": "review",
+    "reviewing_changes": "approve",
     "awaiting_iteration": "revise",
 }
 
@@ -138,6 +146,10 @@ def steps_snapshot(optimization_id: str, active: Optional[str] = None) -> list[d
         if key == "dataset":
             done = has_cases
         elif key == "review":
+            done = stage in ("reviewing_changes", "awaiting_iteration", "complete")
+        elif key == "approve":
+            # No LLM call stands behind this step, so completion is the stage
+            # having moved past the approval card rather than a recorded run.
             done = stage in ("awaiting_iteration", "complete")
         elif key in ("respond", "evaluate"):
             done = scoreboard["total"] > 0 and scoreboard["total"] == scoreboard["passed"] + scoreboard["failed"] + scoreboard["errored"]
@@ -757,9 +769,14 @@ async def submit_review_stream(
     )
     yield _progress(optimization_id, "step_done", "analyze")
 
-    added = await _apply_new_criteria(optimization_id, analysis["new_criteria"], iteration)
+    if analysis["changes"] or analysis["new_criteria"]:
+        # The analyst proposed something, so the user gets the last word on it:
+        # nothing touches the prompt or the judge until they have approved it.
+        _post_changes_form(optimization_id, iteration, analysis, scoreboard)
+        _save_session(optimization_id)
+        return
 
-    if not analysis["changes"] and scoreboard["failed"] == 0 and scoreboard["errored"] == 0:
+    if scoreboard["failed"] == 0 and scoreboard["errored"] == 0:
         # Everything passed and the analyst found nothing to change: there is no
         # revision to make, so stop here rather than churning the prompt.
         opt_db.update_optimization(optimization_id, stage="complete")
@@ -768,56 +785,225 @@ async def submit_review_stream(
             role="assistant",
             kind="complete",
             content=f"All {scoreboard['total']} test cases passed and no changes were suggested. Nothing left to optimize.",
-            payload={"scoreboard": scoreboard, "new_criteria": added},
+            payload={"scoreboard": scoreboard, "new_criteria": []},
         )
         _save_session(optimization_id)
         return
 
+    # Cases are still failing but the analyst named no change to approve; hand the
+    # revisor what there is rather than leaving the loop with nowhere to go.
+    async for event in _revise_stream(optimization_id, iteration, [], 0, [], scoreboard):
+        yield event
+
+
+def _post_changes_form(
+    optimization_id: str,
+    iteration: int,
+    analysis: dict[str, Any],
+    scoreboard: dict[str, int],
+) -> None:
+    """Put the analyst's proposals in front of the user as an approve/reject card.
+
+    The proposals live in this card's payload and nowhere else: the follow-up
+    endpoint reads them back from here, so an approval survives a page reload
+    exactly like every other pause in the loop.
+    """
+    changes = analysis["changes"]
+    new_criteria = analysis["new_criteria"]
+    opt_db.supersede_kind(optimization_id, "changes_form")
+    opt_db.add_message(
+        optimization_id,
+        role="assistant",
+        kind="changes_form",
+        content=(
+            f"{len(changes)} change{'' if len(changes) == 1 else 's'} to the prompt"
+            + (
+                f" and {len(new_criteria)} new success criteri{'on' if len(new_criteria) == 1 else 'a'}"
+                if new_criteria
+                else ""
+            )
+            + " came out of iteration "
+            f"{iteration}. Reject anything you disagree with — only what you approve gets applied."
+        ),
+        payload={
+            "iteration": iteration,
+            "summary": analysis["summary"],
+            "changes": changes,
+            "new_criteria": new_criteria,
+            "scoreboard": scoreboard,
+        },
+    )
+    opt_db.update_optimization(optimization_id, stage="reviewing_changes")
+
+
+# --------------------------------------------------------------------------- step 12: approve -> revise
+
+
+async def submit_changes_stream(
+    optimization_id: str,
+    approved_changes: list[int],
+    approved_criteria: list[int],
+) -> AsyncIterator[StreamEvent]:
+    """Apply only the proposals the user approved, then revise the prompt.
+
+    Both arguments are positions into the lists stored on the open ``changes_form``
+    card, which is where the proposals were persisted. Anything not named here is
+    dropped: a rejected change never reaches the revisor, and a rejected criterion
+    never reaches the judge.
+    """
+    optimization = _require(optimization_id)
+    iteration = optimization["iteration"]
+
+    pending = opt_db.latest_message(optimization_id, "changes_form")
+    if pending is None:
+        raise OptimizerError("There are no proposed changes waiting for your approval.")
+    payload = pending["payload"] or {}
+    proposed = payload.get("changes") or []
+    proposed_criteria = payload.get("new_criteria") or []
+    scoreboard = payload.get("scoreboard") or opt_db.iteration_scoreboard(optimization_id, iteration)
+
+    change_picks = {index for index in approved_changes if 0 <= index < len(proposed)}
+    criteria_picks = {index for index in approved_criteria if 0 <= index < len(proposed_criteria)}
+    changes = [change for index, change in enumerate(proposed) if index in change_picks]
+    new_criteria = [item for index, item in enumerate(proposed_criteria) if index in criteria_picks]
+    rejected = len(proposed) - len(changes)
+
+    opt_db.supersede_kind(
+        optimization_id,
+        "changes_form",
+        approved_changes=sorted(change_picks),
+        approved_criteria=sorted(criteria_picks),
+    )
+    opt_db.add_message(
+        optimization_id,
+        role="user",
+        kind="approval",
+        content=(
+            f"Approved {len(changes)} of {len(proposed)} proposed change(s)"
+            + (
+                f" and {len(new_criteria)} of {len(proposed_criteria)} new criteri{'on' if len(proposed_criteria) == 1 else 'a'}"
+                if proposed_criteria
+                else ""
+            )
+            + "."
+        ),
+        payload={"approved_changes": changes, "rejected": rejected, "approved_criteria": new_criteria},
+    )
+    opt_db.update_optimization(optimization_id, stage="running")
+
+    added = await _apply_new_criteria(optimization_id, new_criteria, iteration)
+
+    if not changes:
+        # Every change was rejected. The prompt is left exactly as it is — the
+        # user has said the analyst was wrong — but the judge may have picked up
+        # approved criteria, so another run against the same prompt is still
+        # worth offering.
+        _post_iteration_form(
+            optimization_id,
+            version=optimization["prompt_version"],
+            iteration=iteration,
+            scoreboard=scoreboard,
+            added=added,
+            content=(
+                f"You rejected all {len(proposed)} proposed change(s), so the prompt stays at"
+                f" v{optimization['prompt_version']}."
+                + (" The criteria you approved have been added to the judge." if added else "")
+                + " Run the test cases again?"
+            ),
+            changed=False,
+        )
+        _save_session(optimization_id)
+        return
+
+    async for event in _revise_stream(optimization_id, iteration, changes, rejected, added, scoreboard):
+        yield event
+
+
+async def _revise_stream(
+    optimization_id: str,
+    iteration: int,
+    changes: list[dict[str, Any]],
+    rejected: int,
+    added: list[dict[str, Any]],
+    scoreboard: dict[str, int],
+) -> AsyncIterator[StreamEvent]:
+    """Write the next prompt version from the approved change list."""
+    optimization = _require(optimization_id)
+    criteria = opt_db.list_criteria(optimization_id)
+
     yield _progress(optimization_id, "step_start", "revise", iteration=iteration)
-    stream = await service.revise_prompt(optimization["current_prompt"], criteria, analysis["changes"])
+    stream = await service.revise_prompt(optimization["current_prompt"], criteria, changes)
     async for delta in stream:
         yield {"type": "delta", "step": "revise", "text": delta}
     completion = stream.completion
     opt_db.record_run(optimization_id, "revise", completion, iteration=iteration)
 
     version = optimization["prompt_version"] + 1
-    change_notes = service.changes_as_text(analysis["changes"])
+    change_notes = service.changes_as_text(changes)
+    if rejected:
+        change_notes += f"\n\n({rejected} further change(s) were proposed and rejected by the reviewer.)"
     opt_db.add_prompt_version(optimization_id, version, completion.content, change_notes)
     opt_db.update_optimization(optimization_id, current_prompt=completion.content, prompt_version=version)
     _write(optimization_id, f"prompt_v{version}.md", completion.content)
     _emit(optimization_id, "revise", completion.content, version=version, change_notes=change_notes)
     yield _progress(optimization_id, "step_done", "revise")
 
+    _post_iteration_form(
+        optimization_id,
+        version=version,
+        iteration=iteration,
+        scoreboard=scoreboard,
+        added=added,
+        content=(
+            f"Prompt v{version} is ready."
+            f" Iteration {iteration} left {scoreboard['failed']} of {scoreboard['total']} test cases failing."
+            " Run the same test cases against the new prompt?"
+        ),
+    )
+    _save_session(optimization_id)
+
+
+def _post_iteration_form(
+    optimization_id: str,
+    version: int,
+    iteration: int,
+    scoreboard: dict[str, int],
+    added: list[dict[str, Any]],
+    content: str,
+    changed: bool = True,
+) -> None:
+    """Offer another run against the current prompt version.
+
+    ``changed`` is false when the user rejected every proposal, so the card can
+    say the prompt is unchanged rather than announcing a new version.
+    """
     opt_db.update_optimization(optimization_id, stage="awaiting_iteration")
     opt_db.supersede_kind(optimization_id, "iteration_form")
     opt_db.add_message(
         optimization_id,
         role="assistant",
         kind="iteration_form",
-        content=(
-            f"Prompt v{version} is ready."
-            f" Iteration {iteration} left {scoreboard['failed']} of {scoreboard['total']} test cases failing."
-            " Run the same test cases against the new prompt?"
-        ),
+        content=content,
         payload={
             "version": version,
             "scoreboard": scoreboard,
             "new_criteria": added,
             "next_iteration": iteration + 1,
+            "changed": changed,
         },
     )
-    _save_session(optimization_id)
 
 
 async def _apply_new_criteria(
     optimization_id: str, new_criteria: list[dict[str, Any]], iteration: int
 ) -> list[dict[str, Any]]:
-    """Append criteria the analyst found in user remarks, then rebuild the judge prompt.
+    """Append the criteria the user approved, then rebuild the judge prompt.
 
     A remark the judge had no criterion for is exactly the gap this loop exists to
     close, so the new criteria go in before the next run rather than being
-    reported and forgotten. Titles already present are skipped so repeated
-    iterations do not stack near-duplicates.
+    reported and forgotten — but only the ones that survived the approval card.
+    Titles already present are skipped so repeated iterations do not stack
+    near-duplicates.
     """
     if not new_criteria:
         return []
@@ -877,3 +1063,12 @@ async def run_iteration(optimization_id: str) -> dict[str, Any]:
 async def submit_review(optimization_id: str, feedback: list[dict[str, Any]]) -> dict[str, Any]:
     """Blocking form of :func:`submit_review_stream`."""
     return await _drain(optimization_id, submit_review_stream(optimization_id, feedback))
+
+
+async def submit_changes(
+    optimization_id: str, approved_changes: list[int], approved_criteria: list[int]
+) -> dict[str, Any]:
+    """Blocking form of :func:`submit_changes_stream`."""
+    return await _drain(
+        optimization_id, submit_changes_stream(optimization_id, approved_changes, approved_criteria)
+    )

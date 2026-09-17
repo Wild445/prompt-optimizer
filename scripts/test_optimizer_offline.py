@@ -1,8 +1,9 @@
 """Run the whole prompt-optimization loop against ``fake_llm.FakeOpenAIClient``.
 
 Drives ``webapp/optimizer.py`` end to end — scaffold, criteria, judge, dataset,
-two graded iterations with a user disagreement in between — against a temporary
-SQLite file and a temporary output folder, with no network and no API key.
+two graded iterations with a user disagreement and a part-approved change list in
+between — against a temporary SQLite file and a temporary output folder, with no
+network and no API key.
 
 Usage:
     python scripts/test_optimizer_offline.py
@@ -107,14 +108,56 @@ async def main() -> None:
             "reason": "This one was fine — the judge misread the third bullet.",
         },
     ]
-    await drive("review -> analyze -> revise", optimizer.submit_review_stream(optimization_id, feedback))
+    await drive("review -> analyze", optimizer.submit_review_stream(optimization_id, feedback))
+
+    optimization = opt_db.get_optimization(optimization_id)
+    print(f"  stage={optimization['stage']} (waiting on the user to approve the changes)")
+    proposal = opt_db.latest_message(optimization_id, "changes_form")["payload"]
+    for index, change in enumerate(proposal["changes"]):
+        print(f"  proposed change {index}: {change['change']}")
+    for index, criterion in enumerate(proposal["new_criteria"]):
+        print(f"  proposed criterion {index}: {criterion['title']}")
+
+    # Approve the first change and the new criterion, reject the rest: only the
+    # approved ones should reach the revisor and the judge.
+    await drive(
+        "approve (1 of 2 changes) -> revise",
+        optimizer.submit_changes_stream(optimization_id, approved_changes=[0], approved_criteria=[0]),
+    )
 
     optimization = opt_db.get_optimization(optimization_id)
     print(f"  now at prompt v{optimization['prompt_version']}, stage={optimization['stage']}")
+    notes = opt_db.list_prompt_versions(optimization_id)[-1]["change_notes"]
+    print(f"  change notes recorded:\n    " + notes.replace("\n", "\n    "))
+    print(f"  criteria now: {[c['title'] for c in opt_db.list_criteria(optimization_id)]}")
 
     if optimization["stage"] == "awaiting_iteration":
         await drive("iteration 2", optimizer.run_iteration_stream(optimization_id))
         print(f"  scoreboard: {opt_db.iteration_scoreboard(optimization_id, 2)}")
+
+    print("\n== rejecting every change leaves the prompt alone ==")
+    results_2 = opt_db.list_results(optimization_id, 2)
+    if results_2:
+        await drive(
+            "review -> analyze",
+            optimizer.submit_review_stream(
+                optimization_id,
+                [{"message_id": row["message_id"], "agrees": True, "reason": ""} for row in results_2],
+            ),
+        )
+        before = opt_db.get_optimization(optimization_id)["prompt_version"]
+        await drive(
+            "approve (nothing) -> no revision",
+            optimizer.submit_changes_stream(optimization_id, approved_changes=[], approved_criteria=[]),
+        )
+        after = opt_db.get_optimization(optimization_id)
+        print(f"  prompt version {before} -> {after['prompt_version']}, stage={after['stage']}")
+
+    print("\n== approving with nothing pending is rejected ==")
+    try:
+        await optimizer.submit_changes(optimization_id, [0], [])
+    except optimizer.OptimizerError as error:
+        print(f"  rejected as expected: {error}")
 
     print("\n== a bad review is rejected ==")
     try:

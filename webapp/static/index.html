@@ -5,16 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NIQ Prompt Creator</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=6" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body data-workspace="creator">
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-head">
         <h1>Prompt Creator</h1>
+        <button type="button" class="panel-toggle" data-panel="sidebar" data-label="sidebar" aria-controls="sidebar-sections" aria-expanded="true">
+          <span class="panel-toggle-icon" aria-hidden="true">&#171;</span>
+        </button>
       </div>
 
-      <div class="sections">
+      <div class="sections" id="sidebar-sections">
         <!-- The head is a switch, not a disclosure: clicking it opens that
              workspace's full view on the right, and only the open workspace
              shows a history. What collapses inside is the step picker alone -
@@ -125,7 +128,10 @@
 
     <aside class="progress-panel active" data-workspace="creator" aria-label="Pipeline progress">
       <div class="progress-head">
-        <span>Progress</span>
+        <button type="button" class="panel-toggle" data-panel="progress" data-label="progress panel" aria-expanded="true">
+          <span class="panel-toggle-icon" aria-hidden="true">&#187;</span>
+        </button>
+        <span class="panel-label">Progress</span>
         <span id="progress-status" class="progress-status">Idle</span>
       </div>
       <ol id="progress-list" class="progress-list" aria-live="polite"></ol>
@@ -152,7 +158,10 @@
 
     <aside class="progress-panel" data-workspace="optimizer" aria-label="Optimization progress">
       <div class="progress-head">
-        <span>Test cases</span>
+        <button type="button" class="panel-toggle" data-panel="progress" data-label="progress panel" aria-expanded="true">
+          <span class="panel-toggle-icon" aria-hidden="true">&#187;</span>
+        </button>
+        <span class="panel-label">Test cases</span>
         <span id="optimizer-progress-status" class="progress-status">Idle</span>
       </div>
       <div id="scoreboard" class="scoreboard" aria-live="polite"></div>
@@ -163,6 +172,6 @@
     </aside>
   </div>
 
-  <script type="module" src="main.js?v=6"></script>
+  <script type="module" src="main.js?v=8"></script>
 </body>
 </html>

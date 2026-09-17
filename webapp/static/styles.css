@@ -11,6 +11,7 @@
   --danger: #ff6b6b;
   --ok: #4ec9a0;
   --radius: 10px;
+  --rail: 42px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
@@ -52,7 +53,10 @@ body {
   flex-direction: column;
 }
 
-.sidebar-head { padding: 16px; border-bottom: 1px solid var(--border); }
+.sidebar-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--border);
+}
 .sidebar-head h1 { font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); margin: 0; }
 
 /* ---------------------------------------------------------------- workspace sections */
@@ -125,6 +129,9 @@ body {
 .conversation-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conversation-meta { font-size: 11px; color: var(--text-dim); margin-top: 3px; display: flex; gap: 6px; }
 
+/* Row actions stay out of the way until the row is hovered or open, so the
+   history reads as names rather than as a column of buttons. */
+.conversation-rename,
 .conversation-delete {
   flex: 0 0 auto;
   width: 22px;
@@ -140,10 +147,35 @@ body {
   opacity: 0;
   transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
+.conversation:hover .conversation-rename,
 .conversation:hover .conversation-delete,
+.conversation.active .conversation-rename,
 .conversation.active .conversation-delete,
+.conversation-rename:focus-visible,
 .conversation-delete:focus-visible { opacity: 1; }
+.conversation-rename:hover { background: var(--bg-input); color: var(--accent); }
 .conversation-delete:hover { background: var(--bg-input); color: #ff6b6b; }
+
+/* The box that replaces a name while it is being renamed - sized to sit exactly
+   where the label was so the row does not jump. */
+.rename-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin: -3px 0;
+  outline: none;
+}
+.topbar-title .rename-input { font-size: 14px; font-weight: 600; flex: 1 1 auto; min-width: 120px; }
+
+/* The open session's heading is a rename target too; the hover tint is the only
+   hint it is clickable, which is enough next to a "Click to rename" tooltip. */
+.renamable { cursor: text; border-radius: 6px; padding: 1px 4px; margin: 0 -4px; }
+.renamable:hover { background: var(--bg-input); }
 
 .sidebar-foot { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-dim); }
 
@@ -197,11 +229,15 @@ body {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 20px; border-bottom: 1px solid var(--border); gap: 12px;
 }
-.topbar-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-#conversation-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.conversation-id { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
-.topbar-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-.usage { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+/* The name is the part worth reading, so it takes the slack in the bar and the
+   id and usage counters give way - a renamed chat is usually longer than the
+   "New chat" this was laid out for. */
+.topbar-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
+#conversation-title,
+#optimization-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+.conversation-id { font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-actions { display: flex; align-items: center; gap: 12px; flex: 0 1 auto; min-width: 0; }
+.usage { font-size: 11px; color: var(--text-dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------------------------------------------------------- settings */
 
@@ -341,10 +377,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   flex-direction: column;
 }
 .progress-head {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
-  padding: 15px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px 12px 12px; border-bottom: 1px solid var(--border);
   font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim);
 }
+.panel-label { flex: 1; min-width: 0; }
 .progress-status { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-dim); font-family: var(--mono); }
 .progress-status.ok { color: var(--ok); }
 
@@ -399,6 +436,57 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .settings { grid-template-columns: 1fr; }
   .progress-panel { display: none; }
 }
+/* ---------------------------------------------------------------- panel collapse
+
+   Either side folds away to a rail rather than to nothing: the toggle that
+   brings the panel back has to stay on screen, and the vertical label keeps the
+   rail meaningful instead of it reading as a stray button. State lives on
+   <body> because the right panel exists once per workspace - both copies
+   collapse together, so switching workspaces cannot resurrect a folded panel. */
+
+.panel-toggle {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: var(--text-dim); cursor: pointer; font-family: var(--font);
+}
+.panel-toggle:hover { background: var(--bg-input); color: var(--text); border-color: var(--border); }
+.panel-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.panel-toggle-icon { font-size: 14px; line-height: 1; transition: transform 0.18s ease; }
+
+body.sidebar-collapsed .panel-toggle[data-panel="sidebar"] .panel-toggle-icon,
+body.progress-collapsed .panel-toggle[data-panel="progress"] .panel-toggle-icon { transform: rotate(180deg); }
+
+.sidebar, .progress-panel { transition: width 0.18s ease, flex-basis 0.18s ease; }
+
+body.sidebar-collapsed .sidebar {
+  width: var(--rail); flex-basis: var(--rail); overflow: hidden;
+}
+body.sidebar-collapsed .sections,
+body.sidebar-collapsed .sidebar-foot { display: none; }
+body.sidebar-collapsed .sidebar-head {
+  flex-direction: column-reverse; justify-content: flex-start; gap: 14px;
+  padding: 12px 0; border-bottom: 0;
+}
+body.sidebar-collapsed .sidebar-head h1 { writing-mode: vertical-rl; }
+
+body.progress-collapsed .progress-panel {
+  width: var(--rail); flex-basis: var(--rail); overflow: hidden;
+}
+body.progress-collapsed .progress-list,
+body.progress-collapsed .scoreboard,
+body.progress-collapsed .progress-foot,
+body.progress-collapsed .progress-status { display: none; }
+body.progress-collapsed .progress-head {
+  flex-direction: column; justify-content: flex-start; gap: 14px;
+  padding: 12px 0; border-bottom: 0;
+}
+body.progress-collapsed .panel-label { writing-mode: vertical-rl; flex: 0 0 auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .progress-panel, .panel-toggle-icon { transition: none; }
+}
+
 /* ---------------------------------------------------------------- workspace visibility
    Last in the file on purpose: these override the `display` each panel type sets
    for itself above, so only the workspace the sidebar has open is in the layout. */
@@ -475,6 +563,26 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .change-what { font-size: 13px; }
 .change-where { font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); margin-top: 3px; }
 .change-evidence { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+
+/* ---------------------------------------------------------------- change approval */
+
+.proposal-list { display: flex; flex-direction: column; gap: 8px; }
+.proposal { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg-input); }
+/* Struck through rather than hidden: a rejected proposal stays readable, so the
+   card still records what was turned down as well as what was applied. */
+.proposal.rejected { opacity: 0.45; }
+.proposal.rejected .proposal-what { text-decoration: line-through; }
+.proposal-head { display: flex; align-items: flex-start; gap: 10px; }
+.proposal-index { font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex: 0 0 auto; min-width: 16px; padding-top: 3px; }
+.proposal-what { flex: 1; min-width: 0; font-size: 13px; line-height: 1.5; }
+.proposal .change-where, .proposal .change-evidence { margin-left: 26px; }
+
+.btn-approve {
+  flex: 0 0 auto; font-family: var(--font); font-size: 11.5px; padding: 4px 10px; border-radius: 6px;
+  cursor: pointer; background: transparent; color: var(--text-dim); border: 1px solid var(--border);
+}
+.btn-approve.approved { background: rgba(78, 201, 160, 0.16); border-color: var(--ok); color: var(--ok); }
+.btn-approve:disabled { cursor: default; }
 
 /* ---------------------------------------------------------------- results table */
 

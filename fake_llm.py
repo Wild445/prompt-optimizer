@@ -148,9 +148,20 @@ def _fake_content(messages: list[dict[str, Any]], kwargs: dict[str, Any]) -> str
                         "prompt_section": "(missing)",
                         "change": "Add a rule requiring a figure for every quantitative claim.",
                         "evidence": "Offline fake evidence from 1 test case.",
+                    },
+                    {
+                        "criteria": ["C1"],
+                        "prompt_section": "Answer questions about ...",
+                        "change": "State explicitly that the answer must be three bullets and nothing else.",
+                        "evidence": "Offline fake evidence from 2 test cases.",
+                    },
+                ],
+                "new_criteria": [
+                    {
+                        "title": "Cites the reporting period",
+                        "description": "The response names the reporting period it is answering about.",
                     }
                 ],
-                "new_criteria": [],
             }
         )
     if _PROMPT_REVISOR_MARKER in system:

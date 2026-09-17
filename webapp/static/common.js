@@ -121,6 +121,57 @@ export function card({ label, body, className = "", open = false }) {
   return node;
 }
 
+/* Turn a label into an inline text box so a session can be renamed wherever its
+   name is shown - the sidebar row or the topbar. Enter or blur commits, Escape
+   reverts; an empty or unchanged name is a no-op. The new name is painted
+   optimistically and rolled back if `onSave` rejects, so the rename feels
+   instant without lying about what the server stored. */
+export function renameInline(label, { value, onSave, onEnd, maxLength = 120 } = {}) {
+  if (label.dataset.editing === "1") return null;
+  const original = value === undefined ? label.textContent : String(value);
+
+  const input = node("input", { type: "text", class: "rename-input", maxlength: String(maxLength) });
+  input.value = original;
+  label.dataset.editing = "1";
+  label.hidden = true;
+  label.after(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const finish = async (commit) => {
+    if (settled) return;
+    settled = true;
+    const next = input.value.trim();
+    input.remove();
+    label.hidden = false;
+    delete label.dataset.editing;
+    // Before onSave, so the list this label lives in is free to re-render again
+    // on the reload that a successful save kicks off.
+    if (onEnd) onEnd();
+    if (!commit || !next || next === original) return;
+    label.textContent = next;
+    try {
+      await onSave(next);
+    } catch (error) {
+      label.textContent = original;
+      alert(error.message);
+    }
+  };
+
+  input.onkeydown = (event) => {
+    // Sidebar rows and the composer listen for keys too; editing owns them here.
+    event.stopPropagation();
+    if (event.key === "Enter") { event.preventDefault(); finish(true); }
+    else if (event.key === "Escape") { event.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+  // Clicking inside the box must not fall through to the row's "open this chat".
+  input.onclick = (event) => event.stopPropagation();
+  input.ondblclick = (event) => event.stopPropagation();
+  return input;
+}
+
 /* Format an estimated-cost float (USD) for display; under a cent still shows
    as non-zero so cheap runs don't all read as "$0.00". */
 export function formatCost(amount) {

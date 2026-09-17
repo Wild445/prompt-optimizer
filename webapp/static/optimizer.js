@@ -6,7 +6,7 @@
    its own form, rendered from the message kind the server stored, so reopening a
    session lands the user back on exactly the step they left. */
 
-import { api, card, el, escapeHtml, formatCost, node, readNdjson, relativeTime, renderMarkdown, truncated } from "./common.js";
+import { api, card, el, escapeHtml, formatCost, node, readNdjson, relativeTime, renameInline, renderMarkdown, truncated } from "./common.js";
 
 const EMPTY_SCORE = { total: 0, passed: 0, failed: 0, errored: 0 };
 
@@ -80,7 +80,12 @@ async function loadStepInfo() {
 
 /* ------------------------------------------------------------------ sidebar */
 
+/* A rename in progress pins the list, for the reason given in creator.js. */
+let renaming = false;
+let sidebarStale = false;
+
 function renderSidebar() {
+  if (renaming) { sidebarStale = true; return; }
   const list = el("optimization-list");
   const count = el("optimization-count");
   if (!list) return;
@@ -106,9 +111,26 @@ function renderSidebar() {
           <span>${formatCost(item.estimated_cost)}</span>
         </div>
       </div>
+      <button type="button" class="conversation-rename" title="Rename optimization" aria-label="Rename optimization">&#9998;</button>
       <button type="button" class="conversation-delete" title="Delete optimization" aria-label="Delete optimization">&#10005;</button>`;
-    row.querySelector(".conversation-name").textContent = item.title;
+    const name = row.querySelector(".conversation-name");
+    name.textContent = item.title;
     row.onclick = () => select(item.id);
+    const startRename = (event) => {
+      // The pencil opens the editor without also opening the session.
+      event.stopPropagation();
+      renaming = true;
+      renameInline(name, {
+        value: item.title,
+        onSave: (title) => rename(item.id, title),
+        onEnd: () => {
+          renaming = false;
+          if (sidebarStale) { sidebarStale = false; renderSidebar(); }
+        },
+      });
+    };
+    row.querySelector(".conversation-rename").onclick = startRename;
+    name.ondblclick = startRename;
     row.querySelector(".conversation-delete").onclick = (event) => {
       // Without this the row's own click handler would re-open what we just deleted.
       event.stopPropagation();
@@ -188,6 +210,7 @@ function renderMessage(message) {
     text: () => (message.role === "user" ? userBubble(message.content) : assistantCard(message)),
     dataset: () => userBubble(message.content),
     review: () => userBubble(message.content),
+    approval: () => userBubble(message.content),
     step: () => stepCard(message),
     error: () => withClass(card({ label: "Step failed", body: escapeHtml(message.content), className: "card-error", open: true })),
     observations_form: () => observationsForm(message),
@@ -201,6 +224,8 @@ function renderMessage(message) {
     run_form_done: () => null,
     results_form: () => resultsForm(message, false),
     results_form_done: () => resultsSummary(message),
+    changes_form: () => changesForm(message, false),
+    changes_form_done: () => changesForm(message, true),
     iteration_form: () => iterationForm(message, false),
     iteration_form_done: () => iterationForm(message, true),
     complete: () => withClass(card({ label: "Optimization complete", body: renderMarkdown(message.content), className: "card-final", open: true })),
@@ -696,12 +721,155 @@ function resultsSummary(message) {
   );
 }
 
+/* ------------------------------------------------------------------ step 10: approve the changes */
+
+/* One approve/reject row. Everything starts approved, so rejecting is the
+   deliberate act and a user who just presses Continue gets what the analyst
+   proposed — the same default the results table uses for the judge's verdicts. */
+function proposalRow(parts, index, done, kept) {
+  const rejected = kept ? !kept.has(index) : false;
+  const row = node("div", { class: `proposal${rejected ? " rejected" : ""}` });
+  const toggle = node("button", { class: "btn-approve", disabled: done });
+  const entry = { index, rejected };
+
+  const paint = () => {
+    row.classList.toggle("rejected", entry.rejected);
+    toggle.textContent = entry.rejected ? "Rejected" : "Approved";
+    toggle.title = entry.rejected ? "Approve this change after all" : "Do not apply this change";
+    toggle.classList.toggle("approved", !entry.rejected);
+  };
+  toggle.onclick = () => {
+    entry.rejected = !entry.rejected;
+    paint();
+    if (parts.onChange) parts.onChange();
+  };
+  paint();
+
+  row.append(
+    node(
+      "div",
+      { class: "proposal-head" },
+      node("span", { class: "proposal-index", text: String(index + 1) }),
+      node("div", { class: "proposal-what", text: parts.what }),
+      toggle,
+    ),
+  );
+  if (parts.where) row.appendChild(node("div", { class: "change-where", text: parts.where }));
+  if (parts.evidence) row.appendChild(node("div", { class: "change-evidence", text: parts.evidence }));
+  return { row, entry };
+}
+
+function changesForm(message, done) {
+  const payload = message.payload || {};
+  const changes = payload.changes || [];
+  const newCriteria = payload.new_criteria || [];
+  /* Only present once submitted: the positions the user kept. */
+  const keptChanges = done ? new Set(payload.approved_changes || []) : null;
+  const keptCriteria = done ? new Set(payload.approved_criteria || []) : null;
+
+  const box = node("div", { class: `msg form-card${done ? " form-done" : ""}` });
+  box.append(
+    node("h3", { text: done ? "Proposed changes (reviewed)" : "Approve the proposed changes" }),
+    node("p", { class: "form-hint", text: message.content }),
+  );
+  if (payload.summary) box.appendChild(node("p", { class: "form-note", text: payload.summary }));
+
+  const counter = node("p", { class: "form-note" });
+  const submit = node("button", { class: "btn-primary form-submit", text: "Apply the approved changes" });
+  const changeEntries = [];
+  const criteriaEntries = [];
+
+  const refreshCounter = () => {
+    const keptCount = changeEntries.filter((entry) => !entry.rejected).length;
+    const keptCriteriaCount = criteriaEntries.filter((entry) => !entry.rejected).length;
+    submit.textContent = keptCount
+      ? `Apply ${keptCount} approved change${keptCount === 1 ? "" : "s"}`
+      : "Continue without changing the prompt";
+    counter.className = keptCount ? "form-note" : "form-warning";
+    counter.textContent = keptCount
+      ? `${keptCount} of ${changes.length} change(s) approved` +
+        (newCriteria.length ? `, ${keptCriteriaCount} of ${newCriteria.length} new criteria approved.` : ".")
+      : "Every change is rejected — the prompt will stay exactly as it is.";
+  };
+
+  if (changes.length) {
+    const list = node("div", { class: "proposal-list" });
+    changes.forEach((change, index) => {
+      const { row, entry } = proposalRow(
+        {
+          what: change.change || "",
+          where: `${(change.criteria || []).join(", ") || "from your remark"} → ${change.prompt_section || "(missing)"}`,
+          evidence: change.evidence || "",
+          onChange: refreshCounter,
+        },
+        index,
+        done,
+        keptChanges,
+      );
+      changeEntries.push(entry);
+      list.appendChild(row);
+    });
+    box.append(node("h4", { text: "Changes to the prompt" }), list);
+  }
+
+  if (newCriteria.length) {
+    const list = node("div", { class: "proposal-list" });
+    newCriteria.forEach((criterion, index) => {
+      const { row, entry } = proposalRow(
+        {
+          what: criterion.title || "",
+          where: criterion.description || "",
+          onChange: refreshCounter,
+        },
+        index,
+        done,
+        keptCriteria,
+      );
+      criteriaEntries.push(entry);
+      list.appendChild(row);
+    });
+    box.append(
+      node("h4", { text: "New success criteria for the judge" }),
+      node("p", {
+        class: "form-note",
+        text: "These come from remarks no existing criterion covered. Approved ones are scored from the next run on.",
+      }),
+      list,
+    );
+  }
+
+  if (done) return box;
+
+  submit.onclick = () => {
+    const approvedChanges = changeEntries.filter((entry) => !entry.rejected).map((entry) => entry.index);
+    const approvedCriteria = criteriaEntries.filter((entry) => !entry.rejected).map((entry) => entry.index);
+    if (!approvedChanges.length && changes.length) {
+      const confirmed = window.confirm(
+        "You rejected every proposed change. The prompt stays at its current version. Continue?",
+      );
+      if (!confirmed) return;
+    }
+    run(`/optimizations/${state.currentId}/changes/stream`, {
+      approved_changes: approvedChanges,
+      approved_criteria: approvedCriteria,
+    });
+  };
+
+  box.append(counter, submit);
+  refreshCounter();
+  return box;
+}
+
 /* ------------------------------------------------------------------ step 12: iterate */
 
 function iterationForm(message, done) {
   const payload = message.payload || {};
   const box = node("div", { class: `msg form-card${done ? " form-done" : ""}` });
-  box.append(node("h3", { text: `Prompt v${payload.version || "?"} is ready` }), node("p", { class: "form-hint", text: message.content }));
+  const heading =
+    payload.changed === false
+      ? `Prompt v${payload.version || "?"} is unchanged`
+      : `Prompt v${payload.version || "?"} is ready`;
+  box.append(node("h3", { text: heading }), node("p", { class: "form-hint", text: message.content }));
 
   if (payload.new_criteria && payload.new_criteria.length) {
     const list = node("ul", { class: "added-criteria" });
@@ -982,6 +1150,17 @@ async function create() {
   );
 }
 
+async function rename(optimizationId, title) {
+  await api(`/optimizations/${optimizationId}`, { method: "PATCH", body: JSON.stringify({ title }) });
+  const row = state.list.find((item) => item.id === optimizationId);
+  if (row) row.title = title;
+  if (state.optimization && state.optimization.id === optimizationId) {
+    state.optimization.title = title;
+    el("optimization-title").textContent = title;
+  }
+  await loadList();
+}
+
 async function remove(item) {
   if (state.busy) return;
   if (!window.confirm(`Delete "${item.title}"? Its criteria, test cases, and graded runs are removed from the database.`)) {
@@ -1015,6 +1194,19 @@ function attach() {
   if (attached) return;
   attached = true;
   el("new-optimization").onclick = create;
+
+  // The open session is renamed from its own heading too, so nobody has to find
+  // the matching sidebar row first.
+  const heading = el("optimization-title");
+  heading.classList.add("renamable");
+  heading.title = "Click to rename";
+  heading.onclick = () => {
+    if (!state.currentId) return;
+    renameInline(heading, {
+      value: (state.optimization && state.optimization.title) || "",
+      onSave: (title) => rename(state.currentId, title),
+    });
+  };
 }
 
 /* Called by main.js the first time this workspace is shown. Loading is deferred

@@ -18,6 +18,7 @@ const WORKSPACES = {
 
 const STORAGE_KEY = "promptCreator.workspace";
 const PICKER_KEY = "promptCreator.pickerCollapsed";
+const PANEL_KEY = "promptCreator.panelsCollapsed";
 
 let current = null;
 
@@ -92,6 +93,64 @@ function wirePickers() {
   });
 }
 
+/* ------------------------------------------------------------------ side panels
+
+   The sidebar and the progress panel each fold to a rail and back. The state is
+   a body class rather than one on the panels: the progress panel is duplicated
+   per workspace, and a per-element class would leave the hidden copy expanded,
+   so switching workspaces would silently unfold it again. */
+
+const PANELS = {
+  sidebar: "sidebar-collapsed",
+  progress: "progress-collapsed",
+};
+
+function readPanels() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(PANEL_KEY) || "[]"));
+  } catch (error) {
+    return new Set();
+  }
+}
+
+function writePanels(collapsed) {
+  try {
+    localStorage.setItem(PANEL_KEY, JSON.stringify([...collapsed]));
+  } catch (error) {
+    /* the panel still folds for this visit */
+  }
+}
+
+function wirePanelToggles() {
+  const collapsed = readPanels();
+  const buttons = [...document.querySelectorAll(".panel-toggle[data-panel]")];
+
+  const apply = (panel, isCollapsed) => {
+    document.body.classList.toggle(PANELS[panel], isCollapsed);
+    for (const button of buttons) {
+      if (button.dataset.panel !== panel) continue;
+      const label = `${isCollapsed ? "Expand" : "Collapse"} ${button.dataset.label || panel}`;
+      button.setAttribute("aria-expanded", String(!isCollapsed));
+      button.setAttribute("aria-label", label);
+      button.title = label;
+    }
+  };
+
+  for (const panel of Object.keys(PANELS)) apply(panel, collapsed.has(panel));
+
+  for (const button of buttons) {
+    button.onclick = () => {
+      const panel = button.dataset.panel;
+      if (!PANELS[panel]) return;
+      const isCollapsed = !document.body.classList.contains(PANELS[panel]);
+      apply(panel, isCollapsed);
+      if (isCollapsed) collapsed.add(panel);
+      else collapsed.delete(panel);
+      writePanels(collapsed);
+    };
+  }
+}
+
 /* ------------------------------------------------------------------ startup */
 
 function wire() {
@@ -100,6 +159,7 @@ function wire() {
     section.querySelector(".section-head").onclick = () => activate(name);
   });
   wirePickers();
+  wirePanelToggles();
 }
 
 (async function start() {
