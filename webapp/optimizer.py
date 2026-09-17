@@ -70,7 +70,7 @@ STEP_INFO = {
     },
     "judge": {
         "title": "Build the judge",
-        "description": "Consolidates your criteria with the drafted ones and writes the finished judge prompt.",
+        "description": "Folds the criteria you approved — verbatim, nothing added or reworded — into the judge prompt.",
     },
     "dataset": {
         "title": "Test cases",
@@ -147,6 +147,10 @@ def steps_snapshot(optimization_id: str, active: Optional[str] = None) -> list[d
             done = has_cases
         elif key == "review":
             done = stage in ("reviewing_changes", "awaiting_iteration", "complete")
+        elif key == "judge":
+            # Assembled in Python rather than by a model (see
+            # service.build_judge_prompt), so there is no recorded run to key off.
+            done = bool((optimization["judge_prompt"] or "").strip())
         elif key == "approve":
             # No LLM call stands behind this step, so completion is the stage
             # having moved past the approval card rather than a recorded run.
@@ -395,7 +399,8 @@ async def submit_observations_stream(optimization_id: str, observations: str) ->
         kind="criteria_form",
         content=(
             "These are the success criteria drawn from your observations. Edit or remove any of them,"
-            " and add anything that is missing — the final list is what the judge will score against."
+            " and add anything that is missing — the list you submit is what the judge scores against,"
+            " word for word. Nothing is added, merged, or re-worded after this point."
             if criteria
             else "Nothing usable came back from the drafter. Add the success criteria yourself below."
         ),
@@ -410,7 +415,7 @@ async def submit_observations_stream(optimization_id: str, observations: str) ->
 async def submit_criteria_stream(
     optimization_id: str, criteria: list[dict[str, Any]], additions: str = ""
 ) -> AsyncIterator[StreamEvent]:
-    """Consolidate the criteria and assemble the finished judge prompt."""
+    """Assemble the finished judge prompt from the criteria exactly as submitted."""
     optimization = _require(optimization_id)
 
     kept = [
@@ -422,8 +427,8 @@ async def submit_criteria_stream(
         for item in criteria
         if str(item.get("title") or item.get("description") or "").strip()
     ]
-    # Free-text additions are one criterion per line; the consolidator sharpens
-    # them into checkable wording, so a rough phrasing here is fine.
+    # Free-text additions are one criterion per line, kept as typed: nothing
+    # between this form and the judge is allowed to re-word them.
     user_added = [
         {"title": line.strip()[:120], "description": line.strip(), "origin": "user"}
         for line in (additions or "").splitlines()
@@ -436,9 +441,10 @@ async def submit_criteria_stream(
     opt_db.update_optimization(optimization_id, stage="running")
 
     yield _progress(optimization_id, "step_start", "judge")
-    merged = await service.consolidate_criteria(optimization["current_prompt"], kept, user_added)
-    opt_db.record_run(optimization_id, "judge", merged.get("completion"))
-    final_criteria = merged["criteria"]
+    # No model stands between the form and the judge: the list below is the one
+    # the user approved, in their order and their words, and the judge prompt is
+    # the scaffold with that list substituted into it.
+    final_criteria = service.consolidate_criteria(kept, user_added)
     opt_db.replace_criteria(optimization_id, final_criteria, iteration=optimization["iteration"])
 
     # Substituted in Python, not written by a model: the criteria the judge

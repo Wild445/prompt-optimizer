@@ -101,9 +101,10 @@ def _normalize_criteria(raw: Any) -> list[dict[str, str]]:
 def assign_ids(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Stamp ``C1..Cn`` onto a criteria list, in order.
 
-    Ids are positional and re-assigned on every consolidation rather than being
-    sticky per criterion: the judge is handed the list as text, and an ordered
-    ``C1, C2, C3`` is what keeps its ``failed_criteria`` readable against it.
+    Ids are positional and re-assigned whenever the list changes rather than
+    being sticky per criterion: the judge is handed the list as text, and an
+    ordered ``C1, C2, C3`` is what keeps its ``failed_criteria`` readable
+    against it.
     """
     return [{**criterion, "id": f"C{index}"} for index, criterion in enumerate(criteria, start=1)]
 
@@ -112,6 +113,21 @@ def criteria_as_text(criteria: list[dict[str, Any]]) -> str:
     """Render criteria the way every agent downstream expects to read them."""
     return "\n".join(
         f"{criterion.get('id') or f'C{index}'} — {criterion.get('title', '')}\n    {criterion.get('description', '')}"
+        for index, criterion in enumerate(criteria, start=1)
+    )
+
+
+def criteria_as_judge_text(criteria: list[dict[str, Any]]) -> str:
+    """Render criteria for the judge prompt: a bold heading line, then the description.
+
+    The judge walks this list one entry at a time and quotes the ids back in
+    ``failed_criteria``, so ``**C1 — Title**`` keeps the boundary between one
+    criterion and the next unmissable however long the list gets. The text of the
+    title and description is untouched — only the markers around them are added.
+    """
+    return "\n\n".join(
+        f"**{criterion.get('id') or f'C{index}'} — {criterion.get('title', '')}**"
+        f"\n{criterion.get('description', '')}"
         for index, criterion in enumerate(criteria, start=1)
     )
 
@@ -156,39 +172,19 @@ async def draft_criteria(prompt_under_test: str, observations: str, max_criteria
     return {"criteria": _normalize_criteria(body.get("criteria")), "completion": completion}
 
 
-async def consolidate_criteria(
-    prompt_under_test: str,
-    drafted: list[dict[str, Any]],
+def consolidate_criteria(
+    kept: list[dict[str, Any]],
     user_added: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Step 5a — merge both lists into the final, id-stamped set.
+) -> list[dict[str, Any]]:
+    """Step 5a — the final list: what the user kept, then what they added.
 
-    Falls back to the two lists concatenated if the agent's answer cannot be
-    read: losing the merge is survivable, losing the user's own criteria is not.
+    Deliberately not an LLM call. A model asked to consolidate this list merges
+    entries the user wanted separate, re-words descriptions it finds loose, and
+    re-introduces checks the user deleted because the prompt under test still
+    implies them — so the judge ends up scoring a list nobody approved. The only
+    thing done to the list here is stamping positional ids.
     """
-    completion = await complete_prompt(
-        _PROMPTS_DIR / "12_criteria_consolidator.prompty",
-        extra_messages=[
-            {
-                "role": "user",
-                "content": "\n\n".join(
-                    [
-                        _block("PROMPT_UNDER_TEST", prompt_under_test),
-                        _block("DRAFTED_CRITERIA", criteria_as_text(drafted)),
-                        _block("USER_ADDED_CRITERIA", criteria_as_text(user_added) or "(none)"),
-                    ]
-                ),
-            }
-        ],
-    )
-    try:
-        body = parse_json_object(completion.content)
-        criteria = _normalize_criteria(body.get("criteria"))
-    except (ValueError, json.JSONDecodeError):
-        criteria = []
-    if not criteria:
-        criteria = [*drafted, *user_added]
-    return {"criteria": assign_ids(criteria), "completion": completion}
+    return assign_ids([*kept, *user_added])
 
 
 def build_judge_prompt(scaffold: str, criteria: list[dict[str, Any]]) -> str:
@@ -205,7 +201,7 @@ def build_judge_prompt(scaffold: str, criteria: list[dict[str, Any]]) -> str:
     invented there), and only a scaffold missing that section too gets one
     appended.
     """
-    block = criteria_as_text(criteria)
+    block = criteria_as_judge_text(criteria)
     if _JUDGE_PLACEHOLDER in scaffold:
         return scaffold.replace(_JUDGE_PLACEHOLDER, block)
     section = re.search(

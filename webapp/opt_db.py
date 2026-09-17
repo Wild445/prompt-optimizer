@@ -11,8 +11,8 @@ Table map:
     One session: the prompt being optimized, its template dialect, the generated
     judge prompt, the current iteration, and the resume point.
 ``optimization_criteria``
-    The judge's success criteria. Rows are replaced wholesale on each
-    consolidation, since ids are positional (see ``service.assign_ids``).
+    The judge's success criteria. Rows are replaced wholesale whenever the list
+    changes, since ids are positional (see ``service.assign_ids``).
 ``optimization_prompts``
     Every version of the prompt under test, with the change notes that produced it.
 ``optimization_cases``
@@ -245,7 +245,7 @@ def replace_criteria(optimization_id: str, criteria: list[dict[str, Any]], itera
     """Swap in a whole criteria list, preserving each entry's original iteration.
 
     Wholesale replacement rather than a diff because ``C1..Cn`` are positional:
-    re-running the consolidator can legitimately merge two entries into one, and
+    the user removing one entry and adding another shifts every id after it, and
     trying to keep per-row identity across that would produce ids that no longer
     match the list the judge is reading.
     """

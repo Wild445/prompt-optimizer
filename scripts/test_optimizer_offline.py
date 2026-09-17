@@ -75,23 +75,34 @@ async def main() -> None:
 
     criteria = opt_db.list_criteria(optimization_id)
     print(f"  drafted {len(criteria)} criteria: {[c['title'] for c in criteria]}")
+
+    # Drop one criterion and re-word another, the way the review form does, so the
+    # assertions below prove the deleted one stays gone and the edit survives.
+    dropped = criteria[-1]
+    submitted = [dict(item) for item in criteria[:-1]]
+    submitted[0]["description"] = "Edited by the user: exactly three bullets, nothing else."
+    addition = "Never exceeds three bullets"
     await drive(
         "criteria -> judge",
-        optimizer.submit_criteria_stream(optimization_id, criteria, additions="Never exceeds three bullets"),
+        optimizer.submit_criteria_stream(optimization_id, submitted, additions=addition),
     )
 
-    # The judge prompt is assembled in Python, so the criteria stored against the
-    # session and the criteria the judge reads have to be the same text.
     final = opt_db.list_criteria(optimization_id)
     judge_prompt = opt_db.get_optimization(optimization_id)["judge_prompt"]
     print(f"  judge prompt: {len(judge_prompt)} chars")
     print(f"  final criteria: {[c['title'] for c in final]}")
+    expected = [item["title"] for item in submitted] + [addition]
+    assert [c["title"] for c in final] == expected, f"criteria were altered: {final}"
+    assert final[0]["description"] == submitted[0]["description"], "a user edit was re-worded"
+    assert all(c["title"] != dropped["title"] for c in final), "a removed criterion came back"
     for criterion in final:
-        assert criterion["title"] in judge_prompt, f"{criterion['id']} missing from the judge prompt"
+        heading = f"**{criterion['id']} — {criterion['title']}**"
+        assert heading in judge_prompt, f"{criterion['id']} missing or not bold in the judge prompt"
         assert criterion["description"] in judge_prompt, f"{criterion['id']} re-worded in the judge prompt"
+    assert dropped["title"] not in judge_prompt, "a removed criterion reached the judge"
     assert "{{SUCCESS_CRITERIA}}" not in judge_prompt, "the placeholder was left in the judge prompt"
     assert judge_prompt.count(" — ") == len(final), "the judge prompt holds criteria that are not on the list"
-    print("  verbatim check: the judge prompt holds exactly the stored criteria, word for word")
+    print("  verbatim check: every submitted criterion is in the judge prompt, the removed one is not")
 
     cases = dataset.parse_dataset(dataset.sample_workbook(), dataset.sample_filename())
     optimizer.store_dataset(

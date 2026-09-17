@@ -442,7 +442,7 @@ function criteriaForm(message, done) {
   const extras = node("textarea", {
     class: "form-area",
     rows: 3,
-    placeholder: "Or type extra criteria here, one per line — they get sharpened into checkable wording.",
+    placeholder: "Or type extra criteria here, one per line — they reach the judge exactly as typed.",
   });
 
   const submit = node("button", { class: "btn-primary form-submit", text: "Build the LLM-as-a-judge" });
