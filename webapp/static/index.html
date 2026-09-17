@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NIQ Prompt Creator</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=6" />
 </head>
 <body data-workspace="creator">
   <div class="layout">
@@ -15,40 +15,57 @@
       </div>
 
       <div class="sections">
-        <!-- Accordion: the open section is the workspace shown on the right. -->
-        <section class="workspace-section expanded" data-section="creator">
-          <button type="button" class="section-head" aria-expanded="true">
-            <span class="section-chev">&#9654;</span>
-            <span class="section-title">Prompt Creation</span>
-            <span class="section-hint">build &amp; refine</span>
+        <!-- The head is a switch, not a disclosure: clicking it opens that
+             workspace's full view on the right, and only the open workspace
+             shows a history. What collapses inside is the step picker alone -
+             folding the workflow away gives the history list the room. -->
+        <section class="workspace-section active" data-section="creator">
+          <button type="button" class="section-head" aria-pressed="true">
+            <span class="section-text">
+              <span class="section-title">Prompt Creation</span>
+              <span class="section-hint">build &amp; refine</span>
+            </span>
+            <span class="section-open">Open</span>
           </button>
           <div class="section-body">
             <button id="new-chat" class="btn-primary">+ New chat</button>
-            <div class="stage-picker">
-              <div class="stage-picker-head">
-                <span>Pipeline steps</span>
+            <div class="stage-picker" data-picker="creator">
+              <button type="button" class="stage-picker-head" aria-expanded="true">
+                <span class="stage-picker-chev">&#9654;</span>
+                <span class="stage-picker-label">Pipeline steps</span>
                 <span class="stage-picker-hint">Pick where to start</span>
-              </div>
+              </button>
               <div id="stage-list" class="stage-list"></div>
+            </div>
+            <div class="history-head">
+              <span>Chat history</span>
+              <span id="conversation-count" class="history-count"></span>
             </div>
             <nav id="conversation-list" class="conversation-list" aria-label="Conversations"></nav>
           </div>
         </section>
 
         <section class="workspace-section" data-section="optimizer">
-          <button type="button" class="section-head" aria-expanded="false">
-            <span class="section-chev">&#9654;</span>
-            <span class="section-title">Prompt Optimization</span>
-            <span class="section-hint">judge &amp; iterate</span>
+          <button type="button" class="section-head" aria-pressed="false">
+            <span class="section-text">
+              <span class="section-title">Prompt Optimization</span>
+              <span class="section-hint">judge &amp; iterate</span>
+            </span>
+            <span class="section-open">Open</span>
           </button>
           <div class="section-body">
             <button id="new-optimization" class="btn-primary">+ New optimization</button>
-            <div class="stage-picker">
-              <div class="stage-picker-head">
-                <span>Loop steps</span>
+            <div class="stage-picker" data-picker="optimizer">
+              <button type="button" class="stage-picker-head" aria-expanded="true">
+                <span class="stage-picker-chev">&#9654;</span>
+                <span class="stage-picker-label">Loop steps</span>
                 <span class="stage-picker-hint">Runs in order</span>
-              </div>
+              </button>
               <div id="optimizer-step-list" class="stage-list"></div>
+            </div>
+            <div class="history-head">
+              <span>Optimization history</span>
+              <span id="optimization-count" class="history-count"></span>
             </div>
             <nav id="optimization-list" class="conversation-list" aria-label="Optimizations"></nav>
           </div>
@@ -146,6 +163,6 @@
     </aside>
   </div>
 
-  <script type="module" src="main.js?v=5"></script>
+  <script type="module" src="main.js?v=6"></script>
 </body>
 </html>

@@ -56,7 +56,12 @@ import { api, card, el, escapeHtml, formatCost, readNdjson, relativeTime, render
   
   function renderSidebar() {
     const list = el("conversation-list");
+    const count = el("conversation-count");
     list.innerHTML = "";
+    if (count) {
+      const total = state.conversations.length;
+      count.textContent = total ? `${total} chat${total === 1 ? "" : "s"}` : "";
+    }
     if (!state.conversations.length) {
       list.innerHTML = `<p class="empty" style="margin:24px 8px;font-size:12px">No conversations yet.</p>`;
       return;

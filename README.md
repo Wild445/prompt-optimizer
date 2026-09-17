@@ -10,8 +10,12 @@ logging, token/latency capture) stays centralized in one place:
   about how a prompt fails, grade a fixed set of test cases with it, and loop
   the prompt until they pass.
 
-The UI's left sidebar holds one foldable section per workspace; opening a section
-switches the panels on the right to that workflow.
+The UI's left sidebar holds one section per workspace. Each section head is a
+button: clicking it opens that workflow's full view on the right, and only the
+open workspace shows its history. Inside the open section the step list folds
+away on its own — collapsing it hands the space to the history below, which is
+the point, so the history never collapses with it. Each section remembers
+whether its step list is folded.
 
 ## Layout
 

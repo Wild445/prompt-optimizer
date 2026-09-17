@@ -57,31 +57,55 @@ body {
 
 /* ---------------------------------------------------------------- workspace sections */
 
-/* An accordion, not independent disclosures: the open section *is* the workspace
-   on the right, so exactly one is open and collapsing it would leave the main
-   panel showing something the sidebar no longer points at. */
+/* The heads are switches, not disclosures: the open section *is* the workspace
+   on the right, so exactly one is open and only that workspace's history is on
+   screen. The step picker inside collapses separately - see below. */
 .sections { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 
 .workspace-section { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); min-height: 0; }
-.workspace-section.expanded { flex: 1; }
+.workspace-section.active { flex: 1; }
 
 .section-head {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 12px 14px; background: transparent; border: 0; cursor: pointer;
+  border-left: 2px solid transparent;
   font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--text-dim);
   letter-spacing: 0.03em; text-align: left;
 }
 .section-head:hover { color: var(--text); background: var(--bg-input); }
-.workspace-section.expanded .section-head { color: var(--text); }
-.section-chev { font-size: 9px; transition: transform 0.15s; flex: 0 0 auto; }
-.workspace-section.expanded .section-chev { transform: rotate(90deg); }
-.section-title { flex: 1; min-width: 0; }
+.section-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.workspace-section.active .section-head {
+  color: var(--text); border-left-color: var(--accent); background: var(--accent-soft);
+}
+/* Title over hint: side by side they wrap mid-word in a 260px sidebar. */
+.section-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.section-title,
+.section-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .section-hint { font-size: 10px; font-weight: 400; color: var(--text-dim); }
-.workspace-section.expanded .section-head .section-hint { color: var(--accent); }
+.workspace-section.active .section-head .section-hint { color: var(--accent); }
+
+/* "Open" on the inactive head is the call to action; on the active one it
+   reads as a status badge instead. */
+.section-open {
+  flex: 0 0 auto; font-size: 9.5px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.section-head:hover .section-open { border-color: var(--accent); color: var(--accent); }
+.workspace-section.active .section-open {
+  border-color: transparent; background: var(--accent); color: #fff;
+}
 
 .section-body { display: none; flex-direction: column; min-height: 0; padding: 0 12px 12px; }
-.workspace-section.expanded .section-body { display: flex; flex: 1; }
+.workspace-section.active .section-body { display: flex; flex: 1; }
 .section-body > .btn-primary { margin-bottom: 10px; }
+
+.history-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-dim); padding: 2px 4px 4px;
+}
+.history-count { font-size: 10.5px; font-weight: 400; text-transform: none; letter-spacing: 0; }
 
 .conversation-list { flex: 1; overflow-y: auto; padding: 4px 0; min-height: 60px; }
 
@@ -125,13 +149,26 @@ body {
 
 /* ---------------------------------------------------------------- stage picker */
 
-.stage-picker { border-bottom: 1px solid var(--border); padding: 0 0 8px; margin-bottom: 8px; }
+/* Collapsible on its own, per section: folding the workflow away is how the
+   user gives the history list below it room, so it must not take the history
+   with it. */
+.stage-picker { border-bottom: 1px solid var(--border); padding: 0 0 8px; margin-bottom: 8px; flex: 0 0 auto; }
+.stage-picker.collapsed { padding-bottom: 6px; margin-bottom: 6px; }
 .stage-picker-head {
-  display: flex; align-items: baseline; justify-content: space-between;
-  font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; padding: 0 4px;
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: transparent; border: 0; border-radius: 6px; cursor: pointer;
+  font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--text);
+  margin-bottom: 8px; padding: 4px; text-align: left;
 }
-.stage-picker-hint { font-size: 10.5px; font-weight: 400; color: var(--text-dim); }
+.stage-picker.collapsed .stage-picker-head { margin-bottom: 0; }
+.stage-picker-head:hover { background: var(--bg-input); }
+.stage-picker-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.stage-picker-chev { font-size: 9px; color: var(--text-dim); flex: 0 0 auto; transition: transform 0.15s; transform: rotate(90deg); }
+.stage-picker.collapsed .stage-picker-chev { transform: rotate(0deg); }
+.stage-picker-label { flex: 1; min-width: 0; }
+.stage-picker-hint { font-size: 10.5px; font-weight: 400; color: var(--text-dim); flex: 0 0 auto; }
 .stage-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.stage-picker.collapsed .stage-list { display: none; }
 .stage-empty { font-size: 11.5px; color: var(--text-dim); margin: 0 0 8px; padding: 0 4px; }
 
 .stage-item { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-input); }

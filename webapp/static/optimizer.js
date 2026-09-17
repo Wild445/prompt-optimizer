@@ -82,8 +82,13 @@ async function loadStepInfo() {
 
 function renderSidebar() {
   const list = el("optimization-list");
+  const count = el("optimization-count");
   if (!list) return;
   list.innerHTML = "";
+  if (count) {
+    const total = state.list.length;
+    count.textContent = total ? `${total} run${total === 1 ? "" : "s"}` : "";
+  }
   if (!state.list.length) {
     list.innerHTML = `<p class="empty" style="margin:16px 8px;font-size:12px">No optimizations yet.</p>`;
     return;
